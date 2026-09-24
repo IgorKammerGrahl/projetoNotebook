@@ -62,6 +62,8 @@ class Session:
         self._kernel: _Kernel | None = None
         self._generation = 0
         self._tasks: list[asyncio.Task] = []
+        self.speculate_debounce = 0.8  # review item 7: background Mojo build after ~800 ms idle
+        self._spec_timers: dict[int, asyncio.TimerHandle] = {}
 
     # ---------------- lifecycle ----------------
 
@@ -71,6 +73,8 @@ class Session:
         self._after()
 
     async def close(self):
+        for h in self._spec_timers.values():
+            h.cancel()
         for t in list(self._builds.values()) + self._tasks:
             t.cancel()
         await asyncio.gather(*self._builds.values(), *self._tasks, return_exceptions=True)
@@ -101,6 +105,20 @@ class Session:
 
     def edit(self, cid: int, code: str):
         self._push(self.sched.edit(cid, code))
+        if self.sched.cells[cid].kind == "mojo":  # debounce: every edit restarts the timer
+            old = self._spec_timers.pop(cid, None)
+            if old:
+                old.cancel()
+            self._spec_timers[cid] = asyncio.get_running_loop().call_later(
+                self.speculate_debounce, self._speculate, cid)
+            self._after()
+
+    def _speculate(self, cid: int):
+        self._spec_timers.pop(cid, None)
+        if cid in self.sched.cells:
+            self._push(self.sched.speculate(cid))
+        else:
+            self._after()
 
     def run(self, cid: int):
         self._push(self.sched.run(cid))
@@ -127,7 +145,7 @@ class Session:
             self.sched.changed.clear()
             for fn in self.listeners:
                 fn(changed)
-        busy = (self.sched.running is not None or self._builds or not self._actions.empty()
+        busy = (self.sched.running is not None or self._builds or self._spec_timers or not self._actions.empty()
                 or (self.sched.queue and not self.sched.kernel_dead))
         self._idle.clear() if busy else self._idle.set()
 
@@ -173,7 +191,7 @@ class Session:
                     self.compiles += built
                     result = {"artifact": asdict(art)}
                 except mojo.CompileError as e:
-                    result = {"error": str(e)}
+                    result = {"error": str(e), "diagnostics": e.diagnostics}
                 self.log.append((time.perf_counter(), "build-end", cid))
         except asyncio.CancelledError:
             self.log.append((time.perf_counter(), "build-killed", cid))

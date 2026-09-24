@@ -271,3 +271,44 @@ def test_edit_while_running_ends_modified():
     assert s.cells[a].status == "running"
     s.ran(a, OK)
     assert s.cells[a].status == "modified"        # it ran the old code
+
+
+# ---------------- speculative builds (review item 7) ----------------
+
+def test_speculate_builds_without_touching_status():
+    s, (d, m) = sched(("python", "xs = 1"), ("mojo", MOJO))
+    acts = s.speculate(m)
+    assert kinds(acts) == ["Compile"] and s.cells[m].status == "idle" and s.cells[m].compiling == MOJO
+    assert s.speculate(m) == []                                       # same code already building
+    s.compiled(m, MOJO, artifact={"so": "x", "loader": "cdll"})
+    assert s.cells[m].artifact_code == MOJO and s.cells[m].status == "idle"
+    assert s.speculate(m) == []                                       # already built
+
+
+def test_speculative_error_is_a_diagnostic_not_a_result():
+    s, (d, m, r) = sched(("python", "xs = 1"), ("mojo", MOJO), ("python", "t = total"))
+    s.speculate(m)
+    s.compiled(m, MOJO, error="line 2:5: error: boom",
+               diagnostics=[{"line": 2, "col": 5, "message": "boom"}])
+    assert s.cells[m].status == "idle" and s.cells[m].error == ""
+    assert s.cells[m].diagnostics == [{"line": 2, "col": 5, "message": "boom"}]
+    assert s.cells[r].status == "idle"                                # nothing blocked
+
+
+def test_run_during_speculative_build_waits_for_it():
+    s, (d, m) = sched(("python", "xs = 1"), ("mojo", MOJO))
+    finish(s, s.run(d))  # m's input must exist, or m is (correctly) blocked
+    s.speculate(m)
+    acts = s.run(m)
+    assert [a for a in acts if isinstance(a, Compile)] == []          # no second build
+    assert s.cells[m].status == "compiling"
+    assert execs(s.compiled(m, MOJO, artifact={"so": "x", "loader": "cdll"})) == [m]
+
+
+def test_edit_clears_old_diagnostics_and_reports_interface_errors_at_once():
+    s, (m,) = sched(("mojo", MOJO))
+    s.cells[m].diagnostics = [{"line": 9, "col": 1, "message": "old"}]
+    s.edit(m, MOJO.replace("mut total: Float64", "mut total: Complex"))
+    assert s.cells[m].diagnostics[0]["line"] == 1 and "Complex" in s.cells[m].diagnostics[0]["message"]
+    s.edit(m, MOJO)
+    assert s.cells[m].diagnostics == []

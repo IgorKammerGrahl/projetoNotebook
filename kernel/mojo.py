@@ -43,7 +43,9 @@ class InterfaceError(Exception):
 
 
 class CompileError(Exception):
-    pass
+    def __init__(self, msg: str, diagnostics: list | None = None):
+        super().__init__(msg)
+        self.diagnostics = diagnostics or []  # [{line, col, message}] in cell coordinates
 
 
 class CellError(Exception):
@@ -160,10 +162,11 @@ def generate(code: str, iface: Interface) -> str:
     return f"{code.rstrip()}\n\n{PRELUDE}{wrapper}"
 
 
-def _map_errors(output: str, src: Path, user_lines: int) -> str:
-    """Compiler diagnostics -> cell lines; errors in generated code get a hint."""
+def _map_errors(output: str, src: Path, user_lines: int) -> tuple[str, list]:
+    """Compiler diagnostics -> (text in cell lines, [{line, col, message}]);
+    errors in generated code get a hint and are pinned to line 1."""
     diag = re.compile(rf"^{re.escape(str(src))}:(\d+):(\d+): error: (.*)$")
-    lines, out, generated = output.splitlines(), [], False
+    lines, out, generated, diags = output.splitlines(), [], False, []
     for i, line in enumerate(lines):
         m = diag.match(line)
         if not m:
@@ -172,13 +175,15 @@ def _map_errors(output: str, src: Path, user_lines: int) -> str:
         if ln <= user_lines:
             out.append(f"line {ln}:{col}: error: {msg}")
             out += [f"    {l}" for l in lines[i + 1:i + 3] if not diag.match(l)]
+            diags.append({"line": ln, "col": int(col), "message": msg})
         else:
             generated = True
             out.append(f"(generated wrapper): error: {msg}")
+            diags.append({"line": 1, "col": 1, "message": f"(generated wrapper) {msg}"})
     if generated:
         out.append("hint: a name in the cell probably collides with the kernel prelude "
                    "(ArrayIn, ArrayOut, nb_cell_entry, __nb_*)")
-    return "\n".join(out) or output.strip()
+    return "\n".join(out) or output.strip(), diags
 
 
 @contextlib.contextmanager
@@ -277,7 +282,7 @@ async def build_async(code: str, cache_dir: Path) -> tuple[Artifact, bool]:
         raise
     if proc.returncode != 0:
         tmp.unlink(missing_ok=True)
-        raise CompileError(_map_errors(out.decode(errors="replace"), src, len(code.rstrip().splitlines())))
+        raise CompileError(*_map_errors(out.decode(errors="replace"), src, len(code.rstrip().splitlines())))
     os.replace(tmp, so)  # atomic publish; concurrent builds of the same key are harmless
     return Artifact(str(so), _loader_for(so)), True
 

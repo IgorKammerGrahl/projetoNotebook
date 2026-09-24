@@ -58,3 +58,51 @@ Todo fonte compilado leva um nonce.
   - `test_async_compile.py`: 4;
   - `test_web.py`: 9, um por rejeição de segurança, mais o protocolo;
   - os 100 anteriores, pelo driver síncrono.
+
+## Compilação especulativa (revisão, item 7)
+
+### Previsão (escrita ANTES de implementar)
+
+Premissas medidas: um `mojo build` de célula pequena leva ~1,4 s, e o debounce é
+de 800 ms. O build especulativo começa em t = 0,8 s depois da última tecla e fica
+pronto em t ≈ 2,2 s.
+
+| Espera entre parar de digitar e o Shift+Enter | Latência prevista até o resultado |
+|---|---|
+| 0 s (Shift+Enter imediato; o run compila na hora) | ~1,4 s (igual a sem especulação) |
+| **~1 s** | **~1,2 s**: o run pega o build em andamento e espera o resto; ganho de só ~0,2 s |
+| 2 s | ~0,2 s |
+| 3 s | ~ms (só a execução) |
+
+A especulação só dá "resultado instantâneo" se a pausa passar de ~2,2 s. Com
+~1 s de pausa, o ganho previsto é pequeno, porque o debounce de 800 ms consome
+quase toda a espera.
+
+### Medido (`tests/bench_speculative.py`, debounce real de 800 ms, 3 rodadas, nonce por fonte)
+
+| Pausa | Previsto | Medido (mediana) |
+|---|---|---|
+| 0 s | ~1,4 s | 1,354 s |
+| **1 s** | **~1,2 s** | **1,171 s** |
+| 2 s | ~0,2 s | 0,162 s |
+| 3 s | ~ms | 0,003 s |
+
+A previsão acertou. Com a pausa de ~1 s que a revisão pediu, o ganho é de só
+~0,18 s, porque o debounce de 800 ms consome quase toda a espera. **Ponto extra,
+para decisão:** com debounce de 300 ms, a mesma pausa de 1 s dá **0,695 s**. O
+custo é matar e recomeçar builds com mais frequência enquanto o usuário digita
+(mais CPU). O valor é `Session.speculate_debounce`.
+
+**Implementação:**
+- `Scheduler.speculate()` emite `Compile` sem mudar o status.
+- `compiled()`, para uma célula fora da fila, grava só `diagnostics`
+  (`[{line, col, message}]`, em coordenadas da célula e vindas de
+  `_map_errors`). Nunca produz um `compile-error`.
+- Um run que encontra um build especulativo do mesmo código em andamento espera
+  por ele, em vez de começar outro.
+- A edição limpa os diagnósticos antigos, e erros da gramática de `run` viram
+  diagnóstico na hora.
+- O protocolo expõe `compiling` e `diagnostics` por célula.
+- Testes: 4 puros, 4 pela `Session` com `mojo` real (debounce, erro como
+  diagnóstico, edição que mata o build, run que reusa o build em andamento) e 1
+  pelo WebSocket.

@@ -83,7 +83,15 @@ class CellState:
     artifact_code: str | None = None
     compiling: str | None = None      # Mojo: code of the in-flight build
     ran_code: str | None = None       # code of the last Exec (None: never executed)
+    diagnostics: list = field(default_factory=list)  # Mojo: [{line, col, message}] for the current code
     before_edit: tuple = ("idle", "") # (status, error) to restore if edited back to ran_code
+
+
+def _interface_diagnostics(error: str) -> list:
+    """`interface line N: msg ...` -> [{line, col, message}] (the grammar gives no column)."""
+    m = re.match(r"interface line (\d+): (.*)", error)
+    return [{"line": int(m.group(1)), "col": 1, "message": m.group(2)}] if m else \
+        [{"line": 1, "col": 1, "message": error.splitlines()[0]}]
 
 
 def _analyzed(code: str, kind: str) -> CellState:
@@ -171,6 +179,7 @@ class Scheduler:
         c.defs_at_run |= c.defs  # readers/co-definers of names it drops must re-run on the next run
         c.code, c.defs, c.refs, c.syntax_error = new.code, new.defs, new.refs, new.syntax_error
         c.quarantine = ""
+        c.diagnostics = _interface_diagnostics(c.syntax_error) if c.kind == "mojo" and c.syntax_error else []
         if cid in self.queue:
             actions += self._ensure_compiled(cid)  # runs the new code when its turn comes
         elif self.running is None or self.running.cid != cid:
@@ -198,17 +207,30 @@ class Scheduler:
         roots = {o for o, x in self.cells.items() if (x.defs | x.refs) & names}
         return actions + self._schedule(roots)
 
-    def compiled(self, cid: int, code: str, artifact=None, error: str = "") -> list:
+    def speculate(self, cid: int) -> list:
+        """Background build while the user edits (review item 7). Never changes the
+        status and never runs: errors come back only as diagnostics."""
+        c = self.cells.get(cid)
+        if (c is None or c.kind != "mojo" or c.syntax_error or c.artifact_code == c.code
+                or c.compiling == c.code):
+            return []
+        actions = [Cancel(cid)] if c.compiling else []
+        c.compiling = c.code
+        self.changed.add(cid)  # `compiling` flag for the frontend
+        return actions + [Compile(cid, c.code)]
+
+    def compiled(self, cid: int, code: str, artifact=None, error: str = "", diagnostics=()) -> list:
         c = self.cells.get(cid)
         if c is None or c.compiling != code:
             return []  # obsolete: the cell was edited, deleted or rebuilt meanwhile
         c.compiling = None
+        c.diagnostics = list(diagnostics) or ([{"line": 1, "col": 1, "message": error}] if error else [])
+        self.changed.add(cid)
         actions = []
         if error:
-            if cid in self.queue:
+            if cid in self.queue:  # a run is waiting on this build: it is the cell's result
                 actions += self._resolve(cid, "compile-error", error)
-            else:
-                self._set(cid, "compile-error", error)
+            # else speculative: diagnostics only, the status is untouched
         else:
             c.artifact, c.artifact_code = artifact, code
             if cid in self.queue:
@@ -376,11 +398,13 @@ class Scheduler:
 
     def _ensure_compiled(self, cid) -> list:
         c = self.cells[cid]
-        if c.kind != "mojo" or c.syntax_error or c.artifact_code == c.code or c.compiling == c.code:
+        if c.kind != "mojo" or c.syntax_error or c.artifact_code == c.code:
             return []
+        self._set(cid, "compiling")
+        if c.compiling == c.code:
+            return []  # a (speculative) build of exactly this code is in flight: wait for it
         actions = [Cancel(cid)] if c.compiling else []
         c.compiling = c.code
-        self._set(cid, "compiling")
         return actions + [Compile(cid, c.code)]
 
     def _drop(self, cid) -> list:

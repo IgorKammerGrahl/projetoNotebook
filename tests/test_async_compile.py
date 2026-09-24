@@ -111,3 +111,68 @@ async def test_independent_cells_compile_in_parallel(s, cache):
             spans.setdefault(cid, []).append(t)
     (s1, e1), (s2, e2), (s3, e3) = spans.values()
     assert max(s1, s2, s3) < min(e1, e2, e3)   # all three were building at the same time
+
+
+# ---------------- speculative builds (review item 7) ----------------
+
+@session_run
+async def test_speculative_build_is_debounced_and_reused_by_run(s, cache):
+    s.speculate_debounce = 0.3
+    s.load([Cell("python", "a = 4")])
+    await s.idle()
+    m = s.add(cell(), "mojo")
+    for _ in range(3):                                  # typing: three edits 0.1 s apart
+        code = cell("    t = a * 5")
+        s.edit(m, code)
+        await asyncio.sleep(0.1)
+    await s.idle()                                      # debounce fires once, build runs
+    assert s.compiles == 1 and s.sched.cells[m].status == "idle"
+    assert s.sched.cells[m].artifact_code == code and s.sched.cells[m].diagnostics == []
+    s.run(m)
+    await s.idle()
+    assert s.sched.cells[m].previews["t"]["repr"] == "20" and s.compiles == 1   # no rebuild
+
+
+@session_run
+async def test_speculative_error_arrives_as_diagnostics_not_as_result(s, cache):
+    s.speculate_debounce = 0.1
+    s.load([Cell("python", "a = 4")])
+    await s.idle()
+    m = s.add(cell(), "mojo")
+    s.edit(m, cell("    t = a * 2\n    t += undefined_name"))
+    await s.idle()
+    c = s.sched.cells[m]
+    assert c.status == "idle" and c.error == ""
+    assert [d["line"] for d in c.diagnostics] == [4] and c.diagnostics[0]["col"] > 1
+    assert "undefined_name" in c.diagnostics[0]["message"]
+
+
+@session_run
+async def test_edit_during_speculative_build_kills_it(s, cache):
+    s.speculate_debounce = 0.05
+    s.load([Cell("python", "a = 4")])
+    await s.idle()
+    m = s.add(cell(), "mojo")
+    s.edit(m, cell())
+    await asyncio.sleep(0.6)                            # first speculative build is running
+    assert s.sched.cells[m].compiling is not None
+    final = cell("    t = a * 7")
+    s.edit(m, final)
+    await s.idle()
+    assert [e for _, e, cid in s.log if cid == m].count("build-killed") == 1
+    assert s.sched.cells[m].artifact_code == final and s.compiles == 1
+
+
+@session_run
+async def test_run_while_speculative_build_in_flight_reuses_it(s, cache):
+    s.speculate_debounce = 0.05
+    s.load([Cell("python", "a = 4")])
+    await s.idle()
+    m = s.add(cell(), "mojo")
+    s.edit(m, cell("    t = a * 3"))
+    await asyncio.sleep(0.4)
+    s.run(m)
+    assert s.sched.cells[m].status == "compiling"
+    await s.idle()
+    assert s.sched.cells[m].previews["t"]["repr"] == "12" and s.compiles == 1
+    assert [e for _, e, cid in s.log if cid == m].count("build-start") == 1

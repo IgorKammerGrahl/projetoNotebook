@@ -171,3 +171,27 @@ def test_tokenless_pages_carry_no_notebook_content_and_keep_host_check(tmp_path)
                 await srv.close()
 
     asyncio.run(main())
+
+
+def test_protocol_exposes_compiling_flag_and_diagnostics(tmp_path):  # review item 7
+    import shutil, uuid
+    if not shutil.which("mojo"):
+        pytest.skip("mojo not on PATH")
+
+    @with_server
+    async def body(srv, http, path):
+        srv.session.speculate_debounce = 0.05
+        ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+        await ws.receive_json()
+        await ws.send_json({"type": "add", "kind": "mojo", "code": "def run(mut t: Int) raises:\n    t = 1"})
+        cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
+        await ws.send_json({"type": "edit", "cid": cid,
+                            "code": f"# nonce {uuid.uuid4().hex}\ndef run(mut t: Int) raises:\n    t = nope"})
+        await recv_until(ws, lambda m: any(c["id"] == cid and c["compiling"] for c in m.get("cells", [])))
+        m = await recv_until(ws, lambda m: any(c["id"] == cid and c["diagnostics"] for c in m.get("cells", [])))
+        c = next(c for c in m["cells"] if c["id"] == cid)
+        assert not c["compiling"] and c["status"] == "idle"
+        assert c["diagnostics"][0]["line"] == 3 and "nope" in c["diagnostics"][0]["message"]
+        await ws.close()
+
+    body(tmp_path)

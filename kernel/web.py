@@ -34,7 +34,9 @@ def cell_json(cid, c, sched) -> dict:
     return _clean({"id": cid, "kind": c.kind, "code": c.code, "status": c.status, "error": c.error,
                    "output": c.output, "previews": c.previews, "defs": sorted(c.defs), "refs": sorted(c.refs),
                    # review item 6: values kept, but computed from outdated upstream code
-                   "upstream_modified": sched.upstream_modified(cid)})
+                   "upstream_modified": sched.upstream_modified(cid),
+                   # review item 7: speculative build in flight / its errors as editor diagnostics
+                   "compiling": c.compiling is not None, "diagnostics": c.diagnostics})
 
 
 class NotebookServer:
