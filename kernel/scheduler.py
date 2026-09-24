@@ -84,6 +84,8 @@ class CellState:
 
 def _analyzed(code: str, kind: str) -> CellState:
     state = CellState(code, kind)
+    if kind not in GRAPH_KINDS:  # markdown / html: kept for the file, never scheduled
+        return state
     try:
         if kind == "mojo":
             iface = mojo.parse_interface(code)
@@ -321,6 +323,8 @@ class Scheduler:
         actions = []
         for cid in sorted(plan, key=list(self.cells).index):
             c = self.cells[cid]
+            if c.kind not in GRAPH_KINDS:
+                continue
             if c.quarantine:  # never re-run automatically; its readers get blocked
                 continue
             if c.syntax_error:

@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import mojo
 from .fmt import Cell
-from .scheduler import GRAPH_KINDS, Cancel, Compile, Delete, Exec, Kill, Restart, Scheduler
+from .scheduler import Cancel, Compile, Delete, Exec, Kill, Restart, Scheduler
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -85,10 +85,13 @@ class Session:
     # ---------------- user events ----------------
 
     def load(self, cells: list[Cell]):
+        """Every cell kind is kept (the server owns the file); only python/mojo are scheduled."""
         for c in cells:
-            if c.kind in GRAPH_KINDS:
-                self.sched.add(c.code, c.kind)
+            self.sched.add(c.code, c.kind)
         self._push(self.sched.run_all())
+
+    def to_file_cells(self) -> list[Cell]:
+        return [Cell(c.kind, c.code) for c in self.sched.cells.values()]
 
     def add(self, code: str, kind: str = "python", after: int | None = None) -> int:
         cid = self.sched.add(code, kind, after)

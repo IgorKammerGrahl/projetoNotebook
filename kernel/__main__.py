@@ -1,5 +1,7 @@
-"""CLI: `pixi run python -m kernel run NOTEBOOK.nb.md`."""
+"""CLI: `pixi run python -m kernel run|serve NOTEBOOK.nb.md`."""
 import argparse
+import asyncio
+import contextlib
 import os
 import sys
 from pathlib import Path
@@ -42,12 +44,33 @@ def run(path: str) -> int:
     return 1 if failed else 0
 
 
+async def serve(path: str, port: int, dev_origins: list[str]):
+    from .web import NotebookServer
+    static = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+    srv = NotebookServer(Path(path), port=port, static_dir=static, extra_origins=tuple(dev_origins))
+    await srv.start()
+    print(f"notebook: {srv.url}", flush=True)
+    try:
+        await asyncio.Event().wait()
+    finally:
+        await srv.close()
+
+
 def main():
     ap = argparse.ArgumentParser(prog="kernel")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    sub.add_parser("run", help="run every Python cell of a notebook").add_argument("path")
+    sub.add_parser("run", help="run every cell of a notebook once, in-process").add_argument("path")
+    sp = sub.add_parser("serve", help="serve a notebook (HTTP + WebSocket on 127.0.0.1)")
+    sp.add_argument("path")
+    sp.add_argument("--port", type=int, default=8765)
+    sp.add_argument("--dev-origin", action="append", default=[],
+                    help="extra allowed WebSocket Origin, e.g. http://localhost:5173 for the Vite dev server")
     args = ap.parse_args()
     check_env()
+    if args.cmd == "serve":
+        with contextlib.suppress(KeyboardInterrupt):
+            asyncio.run(serve(args.path, args.port, args.dev_origin))
+        return
     sys.exit(run(args.path))
 
 

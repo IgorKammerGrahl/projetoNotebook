@@ -496,10 +496,38 @@ faz):
 - um token aleatório (`secrets.token_urlsafe`) gerado no boot, impresso na URL
   e exigido no handshake.
 
+**Implementação (etapa 4) — aceita na revisão, com a validação de Host:**
+- `kernel/web.py`: bind só em `127.0.0.1`, com o endereço efetivo exposto e
+  testado.
+- **Middleware de `Host`** em todas as rotas HTTP, inclusive o handshake do
+  WebSocket: só `127.0.0.1:<porta>` e `localhost:<porta>`. Protege contra DNS
+  rebinding.
+- **WebSocket:** `Origin` obrigatório e contido na lista (a própria origem do
+  servidor, mais `--dev-origin` para o Vite em desenvolvimento). Um `Origin`
+  ausente também é rejeitado, porque todo navegador o envia.
+- **Token:** `secrets.token_urlsafe(32)`, comparado com
+  `secrets.compare_digest` e exigido no handshake.
+- Arquivos estáticos não exigem token: não executam nada, e a página precisa
+  carregar para ler o token da URL.
+- Testes (`tests/test_web.py`), um por rejeição:
+  - bind em loopback;
+  - `Host` estranho e porta errada no HTTP;
+  - `Host` estranho no WebSocket;
+  - `Origin` estranho, `Origin` ausente;
+  - token ausente e token errado;
+  - origem de desenvolvimento aceita só quando configurada.
+- `python -m kernel serve arquivo.nb.md [--port] [--dev-origin]` imprime a URL
+  com o token, como o Jupyter faz.
+- O servidor grava o arquivo com debounce de 1 s e rename atômico. Os previews
+  são saneados para JSON válido no navegador (NaN e Infinity viram string;
+  testado).
+
 ## Dependências novas propostas
 
-- `websockets` (conda-forge): servidor WebSocket sobre `asyncio`, pequeno e
-  mantido. A stdlib não tem WebSocket.
+- **Escolhida: `aiohttp`** (decisão da revisão). O servidor também serve o build
+  do frontend (`frontend/dist`), e o `aiohttp` cobre HTTP e WebSocket numa
+  dependência só. `websockets` exigiria um segundo servidor HTTP para os
+  arquivos estáticos. Instalado: aiohttp 3.14.3 (conda-forge).
 - No frontend: `react`, `typescript`, `vite`, `@codemirror/*`.
 
 ## Previsões para a Fase 3 (a medir na implementação)
