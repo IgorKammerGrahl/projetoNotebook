@@ -385,6 +385,24 @@ Ele verifica que:
 Um segundo teste usa duas células que crasham: são dois reinícios, e nenhum
 terceiro.
 
+**Implementação (etapa 2):**
+- `kernel/kernelproc.py` (o processo kernel) e `kernel/session.py` (o driver
+  assíncrono).
+- Todas as ações do scheduler passam por **um único worker, em ordem**, o que
+  garante que o `Restart` termine antes do próximo `Exec` ser escrito.
+- Há um leitor por geração do kernel, e só a geração atual reporta morte. Assim
+  a mesma morte não é contada duas vezes.
+- **Desvio da proposta:** uma célula `crashed` também sai da quarentena por
+  **execução explícita**, não só por edição. É a regra que a revisão pediu para
+  `interrupted`, estendida a `crashed`. O laço de crashes continua impossível,
+  porque cada nova tentativa exige uma ação do usuário, e é isso que permite
+  reexecutar uma célula inocente depois de corrigir a célula `unsafe_*` a
+  montante que o próprio relato de crash aponta. A propagação automática nunca
+  tira uma célula da quarentena.
+- Ajuste 1 da revisão: a mensagem de crash diz em qual célula o processo morreu e
+  lista as células a montante que usam `unsafe_*`, por detecção textual
+  (`\bunsafe_\w+`), com as APIs encontradas.
+
 ## D-014 — Compilação assíncrona, cancelável e paralela (proposta, paga DEBT-010)
 
 **Contexto:** revisão B3.
