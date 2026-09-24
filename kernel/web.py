@@ -37,13 +37,14 @@ def cell_json(cid, c) -> dict:
 
 class NotebookServer:
     def __init__(self, path: Path, port: int = 0, token: str | None = None,
-                 static_dir: Path | None = None, extra_origins: tuple[str, ...] = ()):
+                 static_dir: Path | None = None, extra_origins: tuple[str, ...] = (),
+                 core_dumps: bool = False):
         self.path = Path(path)
         self.token = token or secrets.token_urlsafe(32)
         self.static_dir = static_dir
         self.extra_origins = set(extra_origins)
         self.port = port
-        self.session = Session(self.path.parent / ".nbcache")
+        self.session = Session(self.path.parent / ".nbcache", core_dumps=core_dumps)
         self.clients: set[web.WebSocketResponse] = set()
         self._save_handle = None
         self._runner = None

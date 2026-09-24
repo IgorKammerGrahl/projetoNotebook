@@ -44,10 +44,11 @@ def run(path: str) -> int:
     return 1 if failed else 0
 
 
-async def serve(path: str, port: int, dev_origins: list[str]):
+async def serve(path: str, port: int, dev_origins: list[str], core_dumps: bool = False):
     from .web import NotebookServer
     static = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-    srv = NotebookServer(Path(path), port=port, static_dir=static, extra_origins=tuple(dev_origins))
+    srv = NotebookServer(Path(path), port=port, static_dir=static, extra_origins=tuple(dev_origins),
+                         core_dumps=core_dumps)
     await srv.start()
     print(f"notebook: {srv.url}", flush=True)
     try:
@@ -65,11 +66,13 @@ def main():
     sp.add_argument("--port", type=int, default=8765)
     sp.add_argument("--dev-origin", action="append", default=[],
                     help="extra allowed WebSocket Origin, e.g. http://localhost:5173 for the Vite dev server")
+    sp.add_argument("--core-dumps", action="store_true",
+                    help="debug: let a crashing kernel write a core dump (off by default: slows recovery ~0.5 s)")
     args = ap.parse_args()
     check_env()
     if args.cmd == "serve":
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(serve(args.path, args.port, args.dev_origin))
+            asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps))
         return
     sys.exit(run(args.path))
 

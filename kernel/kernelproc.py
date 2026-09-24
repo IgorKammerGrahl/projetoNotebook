@@ -13,10 +13,12 @@ import sys
 from .executor import Executor
 
 
-def main(fd: int):
-    # Crashes are an expected, recovered event here (D-013): no core dump. With
-    # systemd-coredump a dump delayed death detection by ~0.5 s per crash.
-    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+def main(fd: int, core_dumps: bool = False):
+    # Crashes are an expected, recovered event here (D-013): no core dump by
+    # default. With systemd-coredump a dump delayed death detection by ~0.5 s.
+    # `serve --core-dumps` keeps the inherited limit, to debug a SIGSEGV in a Mojo cell.
+    if not core_dumps:
+        resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     sock = socket.socket(fileno=fd)
     rf, wf = sock.makefile("rb"), sock.makefile("wb")
     ex = Executor()
@@ -32,4 +34,4 @@ def main(fd: int):
 
 
 if __name__ == "__main__":
-    main(int(sys.argv[1]))
+    main(int(sys.argv[1]), core_dumps="--core-dumps" in sys.argv[2:])

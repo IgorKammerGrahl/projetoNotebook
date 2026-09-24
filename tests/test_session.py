@@ -189,3 +189,28 @@ async def test_stop_with_unread_messages_in_the_kernel_socket(s):
     await s.idle(timeout=15)
     assert s.sched.cells[loop].status == "interrupted" and s.restarts == 1
     assert s.sched.cells[A].status == "ok"
+
+
+def _core_limit(pid: int) -> str:
+    line = next(l for l in open(f"/proc/{pid}/limits") if l.startswith("Max core file size"))
+    return line.split()[4]  # soft limit
+
+
+@pytest.mark.parametrize("core_dumps", [False, True])
+def test_core_dumps_off_by_default_and_debug_flag_restores_them(cache, core_dumps):  # review item 4
+    import resource
+    inherited = resource.getrlimit(resource.RLIMIT_CORE)[0]
+
+    async def main():
+        s = Session(cache, core_dumps=core_dumps)
+        await s.start()
+        s.load([Cell("python", "a = 1")])
+        await s.idle()  # the kernel has booted and set its limit
+        try:
+            return _core_limit(s._kernel.proc.pid)
+        finally:
+            await s.close()
+
+    limit = asyncio.run(main())
+    expected = ("unlimited" if inherited == resource.RLIM_INFINITY else str(inherited)) if core_dumps else "0"
+    assert limit == expected

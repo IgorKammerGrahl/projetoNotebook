@@ -46,8 +46,9 @@ class _Kernel:
 
 
 class Session:
-    def __init__(self, cache_dir: Path | str, max_builds: int | None = None):
+    def __init__(self, cache_dir: Path | str, max_builds: int | None = None, core_dumps: bool = False):
         self.sched = Scheduler()
+        self.core_dumps = core_dumps  # debug: let a crashing kernel write a core dump
         self.cache_dir = Path(cache_dir)
         self.max_builds = max_builds or max(1, (os.cpu_count() or 1) // 4)  # review: nproc // 4
         self.restarts = 0
@@ -188,6 +189,7 @@ class Session:
         env = {**os.environ, "PYTHONPATH": os.pathsep.join(filter(None, [str(ROOT), os.environ.get("PYTHONPATH")]))}
         proc = await asyncio.create_subprocess_exec(
             sys.executable, "-m", "kernel.kernelproc", str(child.fileno()),
+            *(["--core-dumps"] if self.core_dumps else []),
             pass_fds=[child.fileno()], env=env)
         child.close()
         reader, writer = await asyncio.open_connection(sock=parent)
