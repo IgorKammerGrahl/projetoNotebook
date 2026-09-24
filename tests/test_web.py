@@ -116,7 +116,9 @@ async def test_snapshot_edit_run_and_save(srv, http, path):
     md, a, b = (c["id"] for c in snap["cells"])
     assert snap["edges"] == [[a, b]]
     await ws.send_json({"type": "edit", "cid": a, "code": "a = 100"})
-    m = await recv_until(ws, lambda m: any(c["id"] == a and c["status"] == "edited" for c in m.get("cells", [])))
+    m = await recv_until(ws, lambda m: any(c["id"] == a and c["status"] == "modified" for c in m.get("cells", [])))
+    child = next(c for c in m["cells"] if c["id"] == b)          # review item 6: flag reaches the frontend
+    assert child["status"] == "ok" and child["upstream_modified"] == [a] and child["previews"]["b"]["repr"] == "21"
     await ws.send_json({"type": "run", "cid": a})
     m = await recv_until(ws, lambda m: any(c["id"] == b and c["status"] == "ok" for c in m.get("cells", [])))
     assert next(c for c in m["cells"] if c["id"] == b)["previews"]["b"]["repr"] == "101"

@@ -60,8 +60,10 @@ class Kill:
     pass
 
 
-# Statuses: idle | edited | stale | compiling | running | ok | error | syntax-error | compile-error
+# Statuses: idle | modified | stale | compiling | running | ok | error | syntax-error | compile-error
 #           | multiple-definition | cycle | blocked | crashed | interrupted
+# `modified`: the code differs from the last code executed (review item 6). Its values are
+# still in the executor; descendants keep theirs and report it via upstream_modified().
 @dataclass
 class CellState:
     code: str
@@ -80,6 +82,8 @@ class CellState:
     artifact: object = None           # Mojo: built artifact for `artifact_code`
     artifact_code: str | None = None
     compiling: str | None = None      # Mojo: code of the in-flight build
+    ran_code: str | None = None       # code of the last Exec (None: never executed)
+    before_edit: tuple = ("idle", "") # (status, error) to restore if edited back to ran_code
 
 
 def _analyzed(code: str, kind: str) -> CellState:
@@ -170,7 +174,7 @@ class Scheduler:
         if cid in self.queue:
             actions += self._ensure_compiled(cid)  # runs the new code when its turn comes
         elif self.running is None or self.running.cid != cid:
-            self._set(cid, "edited")
+            self._mark_modified(cid)
         return actions
 
     def run(self, cid: int) -> list:
@@ -221,10 +225,16 @@ class Scheduler:
         if result["status"] == "ok":
             c.ran_defs = set(ex.defs)
             c.ran_once = True
-            self._set(cid, "ok" if c.code == ex.code else "edited")
-        else:
-            self._set(cid, result["status"], result["error"])
+        self._set(cid, result["status"], result["error"])
+        if c.code != ex.code:  # edited while it ran
+            self._mark_modified(cid)
         return self._dispatch()
+
+    def upstream_modified(self, cid: int) -> list[int]:
+        """Ancestors whose code differs from what they last executed: this cell's
+        values may come from outdated code (review item 6)."""
+        parents, _, _ = self._graph()
+        return sorted(a for a in self._ancestors(cid, parents) if self.cells[a].status == "modified")
 
     def stop(self) -> list:
         """Stop button: kill the kernel; the running cell ends up `interrupted`."""
@@ -262,8 +272,33 @@ class Scheduler:
 
     def _set(self, cid, status, error=""):
         c = self.cells[cid]
+        if "modified" in (c.status, status) and c.status != status:
+            self.changed |= self._descendants(cid)  # their upstream_modified() changes
         c.status, c.error = status, error
         self.changed.add(cid)
+
+    def _mark_modified(self, cid):
+        """After an edit that does not run: `modified` iff the code differs from the last
+        executed code; editing back restores the previous status."""
+        c = self.cells[cid]
+        if c.ran_code is None:
+            self._set(cid, "idle")
+        elif c.code == c.ran_code:
+            if c.status == "modified":
+                self._set(cid, *c.before_edit)
+        elif c.status != "modified":
+            c.before_edit = (c.status, c.error)
+            self._set(cid, "modified")
+
+    def _descendants(self, cid) -> set:
+        _, children, _ = self._graph()
+        seen, todo = set(), list(children.get(cid, ()))
+        while todo:
+            x = todo.pop()
+            if x not in seen:
+                seen.add(x)
+                todo.extend(children[x])
+        return seen
 
     def _graph(self):
         definers: dict[str, list[int]] = {}
@@ -280,10 +315,10 @@ class Scheduler:
         return parents, children, dup
 
     def _healthy(self, cid) -> bool:
-        """A parent whose names are in the executor: ok, or edited after an ok run
+        """A parent whose names are in the executor: ok, or modified after an ok run
         (its old values are still there, as in Jupyter)."""
         c = self.cells[cid]
-        return c.status == "ok" or (c.status == "edited" and bool(c.ran_defs))
+        return c.status == "ok" or (c.status == "modified" and bool(c.ran_defs))
 
     def _ancestors(self, cid, parents) -> set:
         seen, todo = set(), list(parents[cid])
@@ -395,7 +430,7 @@ class Scheduler:
                 else:
                     self.queue.discard(cid)
                     ex = Exec(cid, c.kind, c.code, sorted(c.defs), sorted(c.ran_defs), c.artifact)
-                    c.ran_defs, c.defs_at_run = set(), set(c.defs)
+                    c.ran_defs, c.defs_at_run, c.ran_code = set(), set(c.defs), c.code
                     self.running = ex
                     self._set(cid, "running")
                     return actions + [ex]

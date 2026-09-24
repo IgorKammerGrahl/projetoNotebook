@@ -29,11 +29,11 @@ def sched(*cells):
     return s, [s.add(code, kind) for kind, code in cells]
 
 
-def test_edit_does_not_run_and_marks_edited():
+def test_edit_does_not_run_and_marks_modified():
     s, (a, b) = sched(("python", "a = 1"), ("python", "b = a"))
     finish(s, s.run_all())
     assert s.edit(a, "a = 2") == []
-    assert s.cells[a].status == "edited" and s.cells[b].status == "ok"
+    assert s.cells[a].status == "modified" and s.cells[b].status == "ok"
 
 
 def test_explicit_run_propagates_to_descendants():
@@ -201,3 +201,73 @@ def test_delete_cancels_build():
     s, (d, m) = sched(("python", "xs = 1"), ("mojo", MOJO))
     s.run_all()
     assert isinstance(s.delete(m)[0], Cancel)
+
+
+# ---------------- `modified` (review item 6) ----------------
+
+def chain():
+    s, ids = sched(("python", "a = 1"), ("python", "b = a"), ("python", "c = b"), ("python", "z = 9"))
+    finish(s, s.run_all())
+    for cid in ids:
+        s.cells[cid].previews = {"v": cid}
+    s.changed.clear()
+    return s, ids
+
+
+def test_edit_marks_modified_and_flags_all_descendants_without_touching_them():
+    s, (a, b, c, z) = chain()
+    s.edit(a, "a = 2")
+    assert s.cells[a].status == "modified"
+    assert [s.cells[x].status for x in (b, c, z)] == ["ok", "ok", "ok"]      # values stay visible
+    assert s.cells[b].previews == {"v": b}
+    assert s.upstream_modified(b) == [a] and s.upstream_modified(c) == [a]   # transitive
+    assert s.upstream_modified(z) == [] and s.upstream_modified(a) == []
+    assert {a, b, c} <= s.changed and z not in s.changed                      # broadcast the flags
+
+
+def test_editing_back_to_the_executed_code_restores_status_and_clears_flags():
+    s, (a, b, c, z) = chain()
+    s.edit(a, "a = 2")
+    s.changed.clear()
+    s.edit(a, "a = 1")
+    assert s.cells[a].status == "ok" and s.upstream_modified(c) == []
+    assert {a, b, c} <= s.changed
+
+
+def test_editing_back_restores_an_error_status_too():
+    s, (a,) = sched(("python", "a = 1 / 0"))
+    acts = s.run_all()
+    s.ran(a, {"status": "error", "error": "ZeroDivisionError", "output": "", "previews": {}})
+    s.edit(a, "a = 1")
+    assert s.cells[a].status == "modified"
+    s.edit(a, "a = 1 / 0")
+    assert (s.cells[a].status, s.cells[a].error) == ("error", "ZeroDivisionError")
+
+
+def test_running_the_modified_cell_clears_the_flags():
+    s, (a, b, c, z) = chain()
+    s.edit(a, "a = 2")
+    assert finish(s, s.run(a)) == [a, b, c]
+    assert s.cells[a].status == "ok" and s.upstream_modified(c) == []
+
+
+def test_modified_parent_does_not_block_an_explicit_run_of_its_child():
+    s, (a, b, c, z) = chain()
+    s.edit(a, "a = 2")
+    assert finish(s, s.run(b)) == [b, c]          # uses a's old values, as before
+    assert s.cells[a].status == "modified" and s.upstream_modified(b) == [a]
+
+
+def test_never_executed_cell_edited_stays_idle():
+    s, (a,) = sched(("python", "a = 1"))
+    s.edit(a, "a = 2")
+    assert s.cells[a].status == "idle"
+
+
+def test_edit_while_running_ends_modified():
+    s, (a,) = sched(("python", "a = 1"))
+    s.run_all()                                   # a is running
+    s.edit(a, "a = 2")
+    assert s.cells[a].status == "running"
+    s.ran(a, OK)
+    assert s.cells[a].status == "modified"        # it ran the old code

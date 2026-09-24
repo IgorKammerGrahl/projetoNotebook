@@ -30,9 +30,11 @@ def _clean(obj):
     return obj
 
 
-def cell_json(cid, c) -> dict:
+def cell_json(cid, c, sched) -> dict:
     return _clean({"id": cid, "kind": c.kind, "code": c.code, "status": c.status, "error": c.error,
-                   "output": c.output, "previews": c.previews, "defs": sorted(c.defs), "refs": sorted(c.refs)})
+                   "output": c.output, "previews": c.previews, "defs": sorted(c.defs), "refs": sorted(c.refs),
+                   # review item 6: values kept, but computed from outdated upstream code
+                   "upstream_modified": sched.upstream_modified(cid)})
 
 
 class NotebookServer:
@@ -124,7 +126,7 @@ class NotebookServer:
 
     def _snapshot(self):
         s = self.session.sched
-        return {"type": "snapshot", "cells": [cell_json(cid, c) for cid, c in s.cells.items()],
+        return {"type": "snapshot", "cells": [cell_json(cid, c, s) for cid, c in s.cells.items()],
                 "edges": self._edges(), "kernel": self._kernel_state()}
 
     def _edges(self):
@@ -161,7 +163,7 @@ class NotebookServer:
             self._schedule_save()
 
     def _on_change(self, changed):
-        msg = {"type": "update", "cells": [cell_json(cid, c) for cid, c in changed.items()],
+        msg = {"type": "update", "cells": [cell_json(cid, c, self.session.sched) for cid, c in changed.items()],
                "order": list(self.session.sched.cells), "edges": self._edges(),
                "kernel": self._kernel_state()}
         for ws in list(self.clients):

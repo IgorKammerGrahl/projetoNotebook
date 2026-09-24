@@ -538,3 +538,17 @@ faz):
 | Edição Mojo → resultado | ~1,65 s (o compilador domina; o protocolo soma < 30 ms) |
 | Crash → notebook recuperado (10 células Python triviais, sem recompilar Mojo) | 0,5–1,5 s (dominado pelo boot do kernel com `numpy` + reexecução) |
 | Cancelar uma compilação por nova edição | < 50 ms entre o SIGKILL e o novo build começar |
+
+## D-017 — Estado `modified` e dependentes de código desatualizado (2026-09-24, revisão item 6)
+
+- `modified` = o código atual difere do **último código executado**
+  (`ran_code`, gravado no `Exec`). É um estado explícito, e substitui o
+  `edited` da etapa 1.
+- Editar de volta para o código executado restaura o status anterior (`ok` ou
+  `error`, com a mensagem). Uma célula que nunca executou fica `idle`.
+- Uma célula `modified` não bloqueia os filhos: seus valores antigos continuam no
+  executor. Os descendentes **mantêm status e valores**, e o protocolo expõe, por
+  célula, `upstream_modified: [ids]`, os ancestrais (transitivos) que estão
+  `modified`. Toda entrada ou saída de `modified` inclui os descendentes no
+  broadcast, para a flag chegar ao frontend.
+- Testes: 7 na máquina de estados e 1 pelo WebSocket.
