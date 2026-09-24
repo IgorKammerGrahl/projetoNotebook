@@ -1,0 +1,10 @@
+.pixi/
+__mojocache__/
+*.so
+__pycache__/
+spikes/**/build/
+# pixi environments
+.pixi/*
+!.pixi/config.toml
+.pytest_cache/
+.nbcache/
