@@ -214,3 +214,15 @@ def test_core_dumps_off_by_default_and_debug_flag_restores_them(cache, core_dump
     limit = asyncio.run(main())
     expected = ("unlimited" if inherited == resource.RLIM_INFINITY else str(inherited)) if core_dumps else "0"
     assert limit == expected
+
+
+@session_test
+async def test_previews_of_non_json_types_do_not_kill_the_kernel(s):
+    """Regression (found by moving the CLI to the real path): json.dumps of a complex or
+    datetime64 preview raised in the kernel, which died and blamed a valid cell."""
+    s.load([Cell("python", "import numpy as np\nz = np.array([1+2j, 3j])\n"
+                           "t = np.array(['2026-09-24'], dtype='datetime64[D]')")])
+    await s.idle()
+    (c,) = s.sched.cells.values()
+    assert c.status == "ok" and s.restarts == 0
+    assert c.previews["z"]["head"] == ["(1+2j)", "3j"] and c.previews["t"]["head"] == ["2026-09-24"]

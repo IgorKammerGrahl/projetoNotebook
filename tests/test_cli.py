@@ -32,7 +32,8 @@ def test_cli_runs_notebook_in_dependency_order(tmp_path):
     p.write_text(NB)
     r = subprocess.run([sys.executable, "-m", "kernel", "run", str(p)], capture_output=True, text=True)
     assert r.returncode == 0, r.stderr
-    assert r.stdout.splitlines() == ["[1] ok", "    6", "[2] ok", "[3] ok", "    mojo sum 6.0"]
+    # ids count every cell of the file (the markdown title is [1]); only python/mojo are listed
+    assert r.stdout.splitlines() == ["[2] ok", "    6", "[3] ok", "[4] ok", "    mojo sum 6.0"]
 
 
 def test_cli_exit_code_on_error(tmp_path):

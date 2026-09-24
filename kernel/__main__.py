@@ -6,7 +6,6 @@ import os
 import sys
 from pathlib import Path
 
-from .engine import Engine
 from .fmt import parse
 
 
@@ -31,16 +30,27 @@ def check_env():
 
 
 def run(path: str) -> int:
-    eng = Engine(cache_dir=Path(path).parent / ".nbcache")
-    eng.load(parse(Path(path).read_text()))
+    """Run every cell once through the real architecture (Session + kernel process)."""
+    from .session import Session
+
+    async def main():
+        s = Session(Path(path).parent / ".nbcache")
+        await s.start()
+        try:
+            s.load(parse(Path(path).read_text()))
+            await s.idle(timeout=3600)
+            return [(cid, c) for cid, c in s.sched.cells.items() if c.kind in ("python", "mojo")]
+        finally:
+            await s.close()
+
     failed = 0
-    for cid, c in eng.cells.items():
+    for cid, c in asyncio.run(main()):
         print(f"[{cid}] {c.status}")
         if c.output:
             print("    " + c.output.rstrip().replace("\n", "\n    "))
         if c.error:
             print("    " + c.error.rstrip().replace("\n", "\n    "))
-            failed += 1
+        failed += c.status != "ok"
     return 1 if failed else 0
 
 

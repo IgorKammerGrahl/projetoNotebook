@@ -29,7 +29,9 @@ def main(fd: int, core_dumps: bool = False):
             ex.delete(req["names"])
             continue
         res = ex.execute(req) if op == "exec" else {"error": f"unknown op {op!r}"}
-        wf.write(json.dumps(res).encode() + b"\n")
+        # default=str: previews of complex/datetime arrays (tolist() -> complex, date) are not
+        # JSON; without it the kernel died on a valid cell and blamed it as `crashed`.
+        wf.write(json.dumps(res, default=str).encode() + b"\n")
         wf.flush()
 
 

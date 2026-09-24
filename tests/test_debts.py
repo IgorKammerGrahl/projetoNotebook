@@ -1,7 +1,6 @@
 """Each test pins the CURRENT behavior of a debt in docs/DEBTS.md.
 When a debt is paid, its test must change along with it."""
 import shutil
-import signal
 import subprocess
 import sys
 import threading
@@ -37,12 +36,14 @@ def test_debt_001_old_cell_libraries_stay_loaded(tmp_path):
 
 
 @needs_mojo
-def test_debt_008_crash_in_mojo_cell_kills_the_kernel(tmp_path):
+def test_debt_008_paid_cli_survives_a_crashing_mojo_cell(tmp_path):
+    """DEBT-008 paid everywhere: the CLI now runs through the Session (review item 5)."""
     nbfile = tmp_path / "crash.nb.md"
-    nbfile.write_text("```mojo\ndef run(mut n: Int) raises:\n"
+    nbfile.write_text("```python\na = 1\n```\n\n```mojo\ndef run(mut n: Int) raises:\n"
                       "    Pointer[Int, MutAnyOrigin](unsafe_from_address=8).unsafe_store(1)\n```\n")
     r = subprocess.run([sys.executable, "-m", "kernel", "run", str(nbfile)], capture_output=True, text=True)
-    assert r.returncode == -signal.SIGSEGV  # whole kernel process dies, no status is reported
+    assert r.returncode == 1 and "[1] ok" in r.stdout
+    assert "[2] crashed" in r.stdout and "SIGSEGV" in r.stdout
 
 
 def test_debt_009_interface_types_are_limited(tmp_path):
