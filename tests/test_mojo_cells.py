@@ -331,3 +331,17 @@ def test_unsafe_ptr_gives_stdlib_pointer_for_simd(cache):  # review of part A, i
         i += 1"""
     e, _ = nb(cache, ("python", "import numpy as np\nxs = np.arange(10, dtype=np.float64)"), ("mojo", code))
     assert np.array_equal(e.ns["ys"], np.arange(10) * 2.0)  # 2 SIMD chunks + 2-element tail
+
+
+def test_stdlib_vectorize_example_from_docs(cache):  # docs/MOJO_CELLS.md, review adjustment 4
+    code = """from std.algorithm.functional import vectorize
+def run(xs: ArrayIn[DType.float64], mut ys: ArrayOut[DType.float64]) raises:
+    var n = len(xs)
+    ys.alloc(n)
+    var p = xs.unsafe_ptr()
+    var q = ys.unsafe_ptr()
+    def body[width: Int](i: Int) {mut}:
+        q.unsafe_store(i, p.unsafe_load[width=width](i) * 2.0)
+    vectorize[8](n, body)"""
+    e, _ = nb(cache, ("python", "import numpy as np\nxs = np.arange(19, dtype=np.float64)"), ("mojo", code))
+    assert np.array_equal(e.ns["ys"], np.arange(19) * 2.0)  # 2 full vectors + a 3-element tail
