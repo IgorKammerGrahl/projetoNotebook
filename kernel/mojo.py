@@ -1,14 +1,18 @@
 """Mojo cells: interface (D-009), build cache (D-004), loader (D-002),
 calls with Python-owned memory (D-003)."""
+import asyncio
 import contextlib
 import ctypes
+import functools
 import hashlib
 import os
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -221,88 +225,118 @@ def _check_input(name: str, t: Type, v):
     return t.ctype(v)
 
 
-class MojoRunner:
-    def __init__(self, cache_dir: Path):
-        self.cache_dir = Path(cache_dir).resolve()
-        self.compiles = 0  # observable for D-004 tests
-        self._libs: dict[str, ctypes.CDLL] = {}
-        self._version = None
+@dataclass(frozen=True)
+class Artifact:
+    so: str      # published path in the cache (never a partial file)
+    loader: str  # "cdll" (GIL released) | "pydll" (GIL held), chosen by D-002
 
-    def _key(self, code: str) -> str:
-        if self._version is None:
-            self._version = subprocess.run(["mojo", "--version"], capture_output=True, text=True,
-                                           check=True).stdout.strip()
-        return hashlib.sha256("\0".join([code, PRELUDE, self._version]).encode()).hexdigest()[:24]
 
-    def load(self, code: str, iface: Interface) -> ctypes.CDLL:
-        if not shutil.which("mojo"):
-            raise CompileError("`mojo` not found on PATH: start the kernel through `pixi run`")
-        key = self._key(code)
-        if key in self._libs:
-            return self._libs[key]
-        so = self.cache_dir / f"{key}.so"
-        if not so.exists():
-            self._build(code, iface, key, so)
-        # D-002: the binary decides; fail-closed to PyDLL when unsure.
-        nm = shutil.which("nm")
-        syms = subprocess.run([nm, "-D", "--undefined-only", str(so)], capture_output=True,
-                              text=True).stdout if nm else None
-        loader = ctypes.CDLL if syms is not None and not _PY_SYMBOL.search(syms) else ctypes.PyDLL
-        lib = loader(str(so))  # new path per version: never importlib.reload (D-001)
+@functools.cache
+def mojo_version() -> str:
+    return subprocess.run(["mojo", "--version"], capture_output=True, text=True, check=True).stdout.strip()
+
+
+def cache_key(code: str) -> str:
+    return hashlib.sha256("\0".join([code, PRELUDE, mojo_version()]).encode()).hexdigest()[:24]
+
+
+def _loader_for(so: Path) -> str:
+    """D-002: the binary decides; fail-closed to PyDLL when unsure."""
+    nm = shutil.which("nm")
+    if not nm:
+        return "pydll"
+    r = subprocess.run([nm, "-D", "--undefined-only", str(so)], capture_output=True, text=True)
+    return "cdll" if r.returncode == 0 and not _PY_SYMBOL.search(r.stdout) else "pydll"
+
+
+async def build_async(code: str, cache_dir: Path) -> tuple[Artifact, bool]:
+    """Compile a cell (or hit the disk cache). Returns (artifact, compiled_now).
+    Cancellation kills the build's process group; only a successful build is
+    published, via atomic rename (D-014)."""
+    if not shutil.which("mojo"):
+        raise CompileError("`mojo` not found on PATH: start the kernel through `pixi run`")
+    cache_dir = Path(cache_dir).resolve()
+    key = cache_key(code)
+    so = cache_dir / f"{key}.so"
+    if so.exists():
+        return Artifact(str(so), _loader_for(so)), False
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    src = cache_dir / f"{key}.mojo"
+    src.write_text(generate(code, parse_interface(code)))
+    tmp = cache_dir / f"{key}.{uuid.uuid4().hex}.tmp"
+    proc = await asyncio.create_subprocess_exec(
+        "mojo", "build", "-O3", "--emit", "shared-lib", str(src), "-o", str(tmp),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
+    try:
+        out, _ = await proc.communicate()
+    except BaseException:  # cancelled (new edit, stop) or the caller is going away
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        await asyncio.shield(proc.wait())
+        tmp.unlink(missing_ok=True)
+        raise
+    if proc.returncode != 0:
+        tmp.unlink(missing_ok=True)
+        raise CompileError(_map_errors(out.decode(errors="replace"), src, len(code.rstrip().splitlines())))
+    os.replace(tmp, so)  # atomic publish; concurrent builds of the same key are harmless
+    return Artifact(str(so), _loader_for(so)), True
+
+
+def build(code: str, cache_dir: Path) -> tuple[Artifact, bool]:
+    """Synchronous build for the in-process driver (CLI, tests)."""
+    return asyncio.run(build_async(code, cache_dir))
+
+
+_libs: dict[str, ctypes.CDLL] = {}
+
+
+def load(artifact: dict) -> ctypes.CDLL:
+    """dlopen by path (a new path per version; never importlib.reload, D-001)."""
+    so = artifact["so"]
+    if so not in _libs:
+        lib = (ctypes.PyDLL if artifact["loader"] == "pydll" else ctypes.CDLL)(so)
         lib.nb_cell_entry.argtypes = [ctypes.c_void_p, _AllocFn]
         lib.nb_cell_entry.restype = ctypes.c_ssize_t
-        self._libs[key] = lib
-        return lib
+        _libs[so] = lib
+    return _libs[so]
 
-    def _build(self, code: str, iface: Interface, key: str, so: Path):
-        self.cache_dir.mkdir(parents=True, exist_ok=True)
-        src = self.cache_dir / f"{key}.mojo"
-        src.write_text(generate(code, iface))
-        tmp = so.with_suffix(f".{os.getpid()}.tmp")
-        r = subprocess.run(["mojo", "build", "-O3", "--emit", "shared-lib", str(src), "-o", str(tmp)],
-                           capture_output=True, text=True, timeout=600)
-        self.compiles += 1
-        if r.returncode != 0:
-            tmp.unlink(missing_ok=True)
-            raise CompileError(_map_errors(r.stdout + r.stderr, src, len(code.rstrip().splitlines())))
-        os.replace(tmp, so)  # atomic: concurrent builds of the same key are harmless
 
-    def call(self, lib: ctypes.CDLL, iface: Interface, values: dict) -> tuple[dict, str]:
-        """Run the cell. Returns (outputs, captured stdout+stderr). Raises CellError."""
-        keep, slots = [], []  # keep: every object whose address Mojo sees stays alive
-        for name, t in iface.ins:
-            v = _check_input(name, t, values[name])
-            keep.append(v)
-            slots += [v.ctypes.data, v.size] if t.array else [ctypes.addressof(v)]
-        scalars = {}
-        for name, t in iface.outs:
-            if not t.array:
-                scalars[name] = t.ctype(0)
-                slots.append(ctypes.addressof(scalars[name]))
-        arrays, err = {}, []
+def call(lib: ctypes.CDLL, iface: Interface, values: dict) -> tuple[dict, str]:
+    """Run the cell. Returns (outputs, captured stdout+stderr). Raises CellError."""
+    keep, slots = [], []  # keep: every object whose address Mojo sees stays alive
+    for name, t in iface.ins:
+        v = _check_input(name, t, values[name])
+        keep.append(v)
+        slots += [v.ctypes.data, v.size] if t.array else [ctypes.addressof(v)]
+    scalars = {}
+    for name, t in iface.outs:
+        if not t.array:
+            scalars[name] = t.ctype(0)
+            slots.append(ctypes.addressof(scalars[name]))
+    arrays, err = {}, []
 
-        def alloc(index, n):
-            try:  # D-003: an exception escaping here would hand Mojo garbage
-                if index == -1:
-                    buf = np.empty(max(n, 1), np.uint8)
-                    err.append(buf[:n])
-                    return buf.ctypes.data
-                name, t = iface.outs[index]
-                if not t.array or name in arrays or n < 0:
-                    return 0
-                buf = np.empty(max(n, 1), t.np_dtype)  # never hand out address 0 for n == 0
-                arrays[name] = buf[:n]
+    def alloc(index, n):
+        try:  # D-003: an exception escaping here would hand Mojo garbage
+            if index == -1:
+                buf = np.empty(max(n, 1), np.uint8)
+                err.append(buf[:n])
                 return buf.ctypes.data
-            except BaseException:
+            name, t = iface.outs[index]
+            if not t.array or name in arrays or n < 0:
                 return 0
+            buf = np.empty(max(n, 1), t.np_dtype)  # never hand out address 0 for n == 0
+            arrays[name] = buf[:n]
+            return buf.ctypes.data
+        except BaseException:
+            return 0
 
-        cb = _AllocFn(alloc)
-        c_slots = (ctypes.c_ssize_t * max(len(slots), 1))(*slots)
-        captured = []
-        with _capture_fds(captured):
-            rc = lib.nb_cell_entry(ctypes.addressof(c_slots), cb)
-        del keep, cb
-        if rc != 0:
-            msg = bytes(err[0]).decode(errors="replace") if err else "Mojo cell failed without a message"
-            raise CellError(msg, captured[0])
-        return {**arrays, **{n: c.value for n, c in scalars.items()}}, captured[0]
+    cb = _AllocFn(alloc)
+    c_slots = (ctypes.c_ssize_t * max(len(slots), 1))(*slots)
+    captured = []
+    with _capture_fds(captured):
+        rc = lib.nb_cell_entry(ctypes.addressof(c_slots), cb)
+    del keep, cb
+    if rc != 0:
+        msg = bytes(err[0]).decode(errors="replace") if err else "Mojo cell failed without a message"
+        raise CellError(msg, captured[0])
+    return {**arrays, **{n: c.value for n, c in scalars.items()}}, captured[0]

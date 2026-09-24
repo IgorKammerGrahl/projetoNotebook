@@ -91,7 +91,7 @@ def test_signature_outside_grammar_is_clear_error(cache, code, msg):
     err = e.cells[c].error
     assert e.cells[c].status == "syntax-error" and msg in err and "accepted form" in err
     assert "line" in err or "exactly one" in msg  # no line to point at when run is missing
-    assert e.mojo.compiles == 0  # never reaches the compiler
+    assert e.compiles == 0  # never reaches the compiler
 
 
 def test_end_of_line_comments_inside_parameters():  # review of part A, item 1
@@ -165,30 +165,30 @@ def test_output_array_is_plain_python_owned_ndarray(cache):
 
 def test_new_upstream_data_reruns_without_recompiling(cache):  # D-004
     e, (data, _, m, down) = flow(cache)
-    before = e.mojo.compiles
+    before = e.compiles
     ran = e.edit(data, "import numpy as np\nxs = np.arange(10, dtype=np.float64)")
-    assert ran == [data, m, down] and e.mojo.compiles == before
+    assert ran == [data, m, down] and e.compiles == before
     assert e.ns["total"] == 2 * 45
 
 
 def test_parameter_from_python_cell_does_not_recompile(cache):  # D-005
     e, (_, k, m, _) = flow(cache)
-    before = e.mojo.compiles
+    before = e.compiles
     e.edit(k, "k = 10.0")
-    assert e.ns["total"] == 60.0 and e.mojo.compiles == before
+    assert e.ns["total"] == 60.0 and e.compiles == before
 
 
 def test_disk_cache_survives_new_engine(cache):
     flow(cache)
     e, _ = flow(cache)
-    assert e.mojo.compiles == 0
+    assert e.compiles == 0
 
 
 def test_editing_mojo_code_recompiles_and_reruns_descendants(cache):
     e, (_, _, m, down) = flow(cache)
-    before = e.mojo.compiles
+    before = e.compiles
     ran = e.edit(m, SCALE.replace("xs[i] * k", "xs[i] * k + 1.0"))
-    assert ran == [m, down] and e.mojo.compiles == before + 1
+    assert ran == [m, down] and e.compiles == before + 1
     assert e.ns["total"] == 16.0
 
 
@@ -196,8 +196,7 @@ def test_editing_mojo_code_recompiles_and_reruns_descendants(cache):
 
 def test_buffer_only_cell_is_loaded_with_gil_released(cache):
     e, (_, _, m, _) = flow(cache)
-    lib = e.mojo.load(SCALE, mojo.parse_interface(SCALE))
-    assert not isinstance(lib, ctypes.PyDLL)
+    assert mojo.build(SCALE, cache)[0].loader == "cdll"
 
 
 def test_cell_using_python_is_loaded_with_pydll_and_works(cache):
@@ -206,7 +205,7 @@ def run(mut n: Int) raises:
     n = Int(py=Python.import_module("builtins").len(Python.list(1, 2, 3)))"""
     e, (c,) = nb(cache, ("mojo", code))
     assert e.cells[c].status == "ok" and e.ns["n"] == 3
-    assert isinstance(e.mojo.load(code, mojo.parse_interface(code)), ctypes.PyDLL)
+    assert mojo.build(code, cache)[0].loader == "pydll"
 
 
 # --- errors ---

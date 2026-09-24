@@ -1,5 +1,5 @@
 import pytest
-from kernel.engine import analyze
+from kernel.analysis import analyze
 
 
 @pytest.mark.parametrize("code, defs, refs", [

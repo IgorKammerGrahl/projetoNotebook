@@ -1,0 +1,203 @@
+"""The pure state machine (D-012): events in, actions out. No processes, no compiler."""
+from kernel.scheduler import Cancel, Compile, Delete, Exec, Kill, Restart, Scheduler
+
+OK = {"status": "ok", "error": "", "output": "", "previews": {}}
+MOJO = "def run(xs: ArrayIn[DType.float64], mut total: Float64) raises:\n    pass"
+
+
+def kinds(actions):
+    return [type(a).__name__ for a in actions]
+
+
+def execs(actions):
+    return [a.cid for a in actions if isinstance(a, Exec)]
+
+
+def finish(s, actions):
+    """Complete every Exec as ok, synchronously; returns the run order."""
+    order = []
+    pending = [a for a in actions if isinstance(a, Exec)]
+    while pending:
+        cid = pending.pop(0).cid
+        order.append(cid)
+        pending += [a for a in s.ran(cid, OK) if isinstance(a, Exec)]
+    return order
+
+
+def sched(*cells):
+    s = Scheduler()
+    return s, [s.add(code, kind) for kind, code in cells]
+
+
+def test_edit_does_not_run_and_marks_edited():
+    s, (a, b) = sched(("python", "a = 1"), ("python", "b = a"))
+    finish(s, s.run_all())
+    assert s.edit(a, "a = 2") == []
+    assert s.cells[a].status == "edited" and s.cells[b].status == "ok"
+
+
+def test_explicit_run_propagates_to_descendants():
+    s, (a, b, c) = sched(("python", "a = 1"), ("python", "b = a"), ("python", "c = 3"))
+    finish(s, s.run_all())
+    s.edit(a, "a = 2")
+    assert finish(s, s.run(a)) == [a, b]
+
+
+def test_only_one_exec_at_a_time():
+    s, (a, b) = sched(("python", "a = 1"), ("python", "z = 2"))
+    acts = s.run_all()
+    assert execs(acts) == [a]
+    assert s.cells[b].status == "stale"
+    assert execs(s.ran(a, OK)) == [b]
+
+
+def test_running_parent_does_not_block_child():
+    s, (a, b) = sched(("python", "a = 1"), ("python", "b = a"))
+    acts = s.run_all()
+    assert execs(acts) == [a] and s.cells[b].status == "stale"  # waits, not blocked
+
+
+def test_independent_mojo_cells_compile_in_parallel():
+    s, (d, m1, m2) = sched(("python", "import numpy as np\nxs = np.ones(3)"),
+                           ("mojo", MOJO), ("mojo", MOJO.replace("total", "other")))
+    acts = s.run_all()
+    assert [a.cid for a in acts if isinstance(a, Compile)] == [m1, m2]  # both before any result
+    assert s.cells[m1].status == s.cells[m2].status == "compiling"
+
+
+def test_python_cell_runs_while_mojo_compiles_and_readers_wait():
+    s, (d, m, r, free) = sched(("python", "xs = 1"), ("mojo", MOJO), ("python", "t = total"), ("python", "q = 1"))
+    acts = s.run_all()
+    assert execs(acts) == [d]
+    assert execs(s.ran(d, OK)) == [free]      # m still compiling: independent q goes first
+    assert s.cells[r].status == "stale"       # reader of m's output waits
+    assert s.ran(free, OK) == []              # nothing runnable until the build lands
+    assert execs(s.compiled(m, s.cells[m].code, artifact={"so": "x", "loader": "cdll"})) == [m]
+    assert execs(s.ran(m, OK)) == [r]
+
+
+def test_edit_cancels_build_and_obsolete_result_is_ignored():
+    s, (d, m) = sched(("python", "xs = 1"), ("mojo", MOJO))
+    s.run_all()
+    old = s.cells[m].code
+    acts = s.edit(m, MOJO + "\n    # v2")
+    assert kinds(acts) == ["Cancel", "Compile"]   # still queued: rebuild the new code
+    assert s.compiled(m, old, artifact={"so": "old", "loader": "cdll"}) == []  # obsolete: dropped
+    assert s.cells[m].compiling == MOJO + "\n    # v2"
+
+
+def test_compile_error_blocks_readers():
+    s, (d, m, r) = sched(("python", "xs = 1"), ("mojo", MOJO), ("python", "t = total"))
+    finish(s, s.run_all())
+    acts = s.compiled(m, s.cells[m].code, error="line 2: boom")
+    assert s.cells[m].status == "compile-error" and s.cells[r].status == "blocked"
+    assert "[2] compile-error" in s.cells[r].error
+
+
+def test_crash_quarantines_restarts_and_reruns_the_rest():
+    s, (a, b, c, d, e) = sched(("python", "a = 1"), ("python", "b = a"), ("python", "c = a"),
+                               ("python", "d = c"), ("python", "e = 5"))
+    finish(s, s.run_all())
+    s.edit(c, "c = a  # crashes")
+    acts = s.run(c)
+    assert execs(acts) == [c]
+    acts = s.kernel_died("SIGSEGV")
+    assert isinstance(acts[0], Restart)
+    assert s.cells[c].status == "crashed" and "cell [3]" in s.cells[c].error and "SIGSEGV" in s.cells[c].error
+    assert finish(s, acts) == [a, b, e]       # everything that had run, minus c and its reader
+    assert s.cells[d].status == "blocked"
+    assert all(s.cells[x].status == "ok" for x in (a, b, e))
+
+
+def test_crash_with_two_bad_cells_restarts_twice_then_settles():
+    s, (a, x, y) = sched(("python", "a = 1"), ("python", "x = a"), ("python", "y = a"))
+    acts = s.run_all()
+    acts = s.ran(a, OK)                 # x starts
+    acts = s.kernel_died("SIGSEGV")     # x crashes -> restart, rerun a then y
+    assert kinds(acts)[0] == "Restart" and execs(acts) == [a]
+    acts = s.ran(a, OK)
+    assert execs(acts) == [y]
+    acts = s.kernel_died("SIGSEGV")     # y crashes too -> second restart, rerun a only
+    assert kinds(acts)[0] == "Restart"
+    assert finish(s, acts) == [a]
+    assert [s.cells[c].status for c in (a, x, y)] == ["ok", "crashed", "crashed"]
+
+
+def test_crash_message_lists_upstream_unsafe_cells():  # review item 1
+    s, (a, u, safe, victim) = sched(
+        ("python", "import numpy as np\nxs = np.ones(4)"),
+        ("mojo", "def run(xs: ArrayIn[DType.float64], mut ys: ArrayOut[DType.float64]) raises:\n"
+                 "    ys.alloc(1)\n    ys.unsafe_set(9999, 1.0)  # corrupts\n    _ = xs.unsafe_ptr()"),
+        ("python", "z = xs.sum()"),
+        ("python", "w = ys[0] + z"))
+    s.cells[u].artifact_code = s.cells[u].code  # pretend built
+    finish(s, s.run_all())
+    s.edit(victim, "w = ys[0] + z + 0")
+    s.run(victim)
+    s.kernel_died("SIGSEGV")
+    msg = s.cells[victim].error
+    assert "while running cell [4]" in msg
+    assert "[2] (unsafe_ptr, unsafe_set)" in msg
+    assert "[1]" not in msg and "[3]" not in msg  # upstream but no unsafe_*: not listed
+
+
+def test_crash_message_says_when_no_upstream_unsafe():
+    s, (a, b) = sched(("python", "a = 1"), ("python", "b = a"))
+    finish(s, s.run_all())
+    s.run(b)
+    s.kernel_died("SIGSEGV")
+    assert "No upstream cell uses unsafe_*" in s.cells[b].error
+
+
+def test_stop_interrupts_with_distinct_message():
+    s, (a, loop, r) = sched(("python", "a = 1"), ("python", "while True: pass\nb = a"), ("python", "c = b"))
+    acts = s.run_all()
+    s.ran(a, OK)
+    assert s.running.cid == loop
+    assert kinds(s.stop()) == ["Kill"]
+    acts = s.kernel_died("SIGKILL")
+    assert s.cells[loop].status == "interrupted" and "stop button" in s.cells[loop].error
+    assert "died" not in s.cells[loop].error
+    assert finish(s, acts) == [a] and s.cells[r].status == "blocked"
+
+
+def test_explicit_run_lifts_quarantine_propagation_does_not():
+    s, (a, x) = sched(("python", "a = 1"), ("python", "x = a"))
+    s.run_all()
+    s.ran(a, OK)
+    finish(s, s.kernel_died("SIGSEGV"))          # x crashed
+    finish(s, s.run(a))                           # upstream re-run: x stays quarantined
+    assert s.cells[x].status == "crashed"
+    assert execs(s.run(x)) == [x]                 # explicit run: it goes again
+
+
+def test_stop_with_nothing_running_is_noop():
+    s, _ = sched(("python", "a = 1"))
+    finish(s, s.run_all())
+    assert s.stop() == []
+
+
+def test_orphan_deaths_give_up_after_three():
+    s, (a,) = sched(("python", "a = 1"))
+    finish(s, s.run_all())
+    s.queue.clear()
+    results = []
+    for _ in range(4):  # deaths with nothing running, before any cell completes
+        results.append(s.kernel_died("SIGSEGV"))
+        s.running = None
+    assert all(isinstance(r[0], Restart) for r in results[:3])
+    assert results[3] == [] and s.kernel_dead
+
+
+def test_delete_cell_drops_its_names_and_reruns_readers():
+    s, (a, b) = sched(("python", "a = 1"), ("python", "b = a"))
+    finish(s, s.run_all())
+    acts = s.delete(a)
+    assert isinstance(acts[0], Delete) and acts[0].names == ["a"]
+    assert execs(acts) == [b]
+
+
+def test_delete_cancels_build():
+    s, (d, m) = sched(("python", "xs = 1"), ("mojo", MOJO))
+    s.run_all()
+    assert isinstance(s.delete(m)[0], Cancel)

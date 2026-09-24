@@ -57,7 +57,7 @@ def test_debt_010_compile_blocks_the_caller(tmp_path):
     e = Engine(cache_dir=tmp_path)
     e.load([Cell("mojo", CELL.replace("VALUE", "7"))])
     (cid,) = e.cells
-    assert e.mojo.compiles == 1 and e.cells[cid].status == "ok"  # load() returned only after mojo build
+    assert e.compiles == 1 and e.cells[cid].status == "ok"  # load() returned only after mojo build
 
 
 @needs_mojo

@@ -270,7 +270,7 @@ um contrato.
 
 ---
 
-# Proposta da Fase 3 (B) — aguardando revisão, nada implementado
+# Fase 3 (B) — proposta aprovada com ajustes; notas de implementação em cada decisão
 
 ## D-012 — Dois processos: servidor e kernel (proposta)
 
@@ -321,6 +321,27 @@ Mojo leva tudo junto (DEBT-008), e uma compilação trava tudo (DEBT-010).
 **Efeito nas dívidas:** a DEBT-007 fica quase paga. Não há mais thread do
 servidor imprimindo dentro do processo que captura; restam só threads criadas
 pelo próprio usuário.
+
+**Implementação (etapa 1) — o que mudou em relação à proposta:**
+- `kernel/scheduler.py`: a máquina de estados pura. `kernel/executor.py`: o
+  namespace e a execução. `kernel/analysis.py`: a análise de nomes.
+  `kernel/engine.py` vira um driver síncrono in-process.
+- **A CLI e os testes semânticos usam o driver síncrono** (scheduler + executor
+  no mesmo processo), e não o servidor. Motivo: os 100 testes existentes
+  continuam valendo sem subir processos. O servidor usa o **mesmo** scheduler e o
+  **mesmo** executor, este dentro do processo kernel. Consequência: a CLI
+  continua morrendo num SIGSEGV (DEBT-008 segue fixada nela).
+- **Execução explícita (revisão, ajuste 3):** editar não executa; a célula vai
+  para `edited`. Só `run` executa, propagando aos descendentes. O `Engine.edit`
+  do driver síncrono é "editar e executar", o equivalente ao Shift+Enter.
+- **Um pai editado e ainda não reexecutado não bloqueia os filhos:** os valores
+  antigos dele continuam no executor, como no Jupyter.
+- A edição acumula os nomes que a célula deixou de definir até a próxima
+  execução. Sem isso, ao desfazer uma definição duplicada, o outro definidor não
+  era reavaliado (bug pego pelos testes antigos).
+- Um ciclo é resolvido de uma vez só. Tirar um membro da fila "quebrava" o ciclo
+  no meio, e o segundo membro virava `blocked` em vez de `cycle` (bug pego pelos
+  testes antigos).
 
 ## D-013 — Recuperação quando o kernel morre (proposta, paga DEBT-008)
 
