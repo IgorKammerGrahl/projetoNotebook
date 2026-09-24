@@ -139,3 +139,33 @@ async def test_nan_previews_are_valid_browser_json(srv, http, path):
     raw = next(c for c in m["cells"] if c["id"] == added["cid"])["previews"]["z"]["head"]
     assert raw == [1.0, "nan", "inf"]
     await ws.close()
+
+
+def test_tokenless_pages_carry_no_notebook_content_and_keep_host_check(tmp_path):  # review item 3
+    secret = "SEGREDO_DO_NOTEBOOK_7f3a"
+    path = tmp_path / "s.nb.md"
+    path.write_text(f"# {secret}\n\n```python\nx = '{secret}'\n```\n")
+    static = tmp_path / "dist"
+    (static / "assets").mkdir(parents=True)
+    (static / "index.html").write_text("<!doctype html><div id=root></div><script src=/assets/app.js></script>")
+    (static / "assets" / "app.js").write_text("console.log('app')")
+
+    async def main():
+        for static_dir in (None, static):  # placeholder page and a real frontend build
+            srv = NotebookServer(path, static_dir=static_dir)
+            await srv.start()
+            await srv.session.idle()
+            base = f"http://127.0.0.1:{srv.port}"
+            try:
+                async with aiohttp.ClientSession() as http:
+                    routes = ["/"] + (["/assets/app.js"] if static_dir else [])
+                    for route in routes:
+                        r = await http.get(base + route)                 # no token at all
+                        body = await r.text()
+                        assert r.status == 200 and secret not in body and "x =" not in body
+                        r = await http.get(base + route, headers={"Host": f"evil.example:{srv.port}"})
+                        assert r.status == 403                           # Host check still applies
+            finally:
+                await srv.close()
+
+    asyncio.run(main())
