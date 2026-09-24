@@ -442,6 +442,18 @@ terceiro.
 - **Fora do escopo desta fase:** interromper uma célula em execução (SIGINT no
   kernel). Uma edição feita enquanto uma célula roda espera ela terminar.
 
+**Implementação (etapa 3):**
+- `mojo.build_async` compila para `<chave>.<uuid>.tmp` e só publica com
+  `os.replace` quando o build dá certo. O build roda em sessão própria
+  (`start_new_session`); ao ser cancelado, o grupo de processos inteiro leva
+  `SIGKILL`, e o `.tmp` é apagado.
+- Teste: matar o build no meio não publica nem `.so` nem `.tmp`, não deixa
+  processo `mojo build` vivo, e a mesma chave compila normalmente depois.
+- A compilação começa quando a célula é **executada** (ajuste 3: execução
+  explícita), não quando é editada. Editar uma célula que está compilando mata o
+  build. Se a célula ainda estiver na fila, o build recomeça com o código novo;
+  um resultado que chegue atrasado de um build antigo é descartado.
+
 ## D-015 — Frontend (proposta)
 
 - React + TypeScript + Vite.
