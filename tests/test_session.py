@@ -171,3 +171,21 @@ async def test_stop_button_interrupts_mojo_infinite_loop(s):
     await s.idle()
     assert s.sched.cells[loop].status == "interrupted" and s.restarts == 1
     assert s.sched.cells[next(iter(s.sched.cells))].status == "ok"
+
+
+@session_test
+async def test_stop_with_unread_messages_in_the_kernel_socket(s):
+    """Regression: a kernel killed with unread input answers with RST, not EOF.
+    The reader saw ConnectionResetError, died silently, and the session hung."""
+    s.load([Cell("python", "a = 1"), Cell("python", "gone = 2")])
+    await s.idle()
+    A, G = s.sched.cells
+    loop = s.add("while True:\n    pass")
+    s.run(loop)
+    await wait_running(s, loop)
+    s.delete(G)          # a Delete the looping kernel will never read
+    await asyncio.sleep(0.2)
+    s.stop()
+    await s.idle(timeout=15)
+    assert s.sched.cells[loop].status == "interrupted" and s.restarts == 1
+    assert s.sched.cells[A].status == "ok"

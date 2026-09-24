@@ -6,6 +6,7 @@ stdout/stderr: the executor redirects fds 1 and 2 to capture Mojo prints.
     {"op": "delete", "names": [...]} -> (no reply)
 """
 import json
+import resource
 import socket
 import sys
 
@@ -13,6 +14,9 @@ from .executor import Executor
 
 
 def main(fd: int):
+    # Crashes are an expected, recovered event here (D-013): no core dump. With
+    # systemd-coredump a dump delayed death detection by ~0.5 s per crash.
+    resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
     sock = socket.socket(fileno=fd)
     rf, wf = sock.makefile("rb"), sock.makefile("wb")
     ex = Executor()

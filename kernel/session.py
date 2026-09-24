@@ -195,14 +195,17 @@ class Session:
         self._tasks.append(asyncio.create_task(self._read(self._kernel)))
 
     async def _read(self, k: _Kernel):
-        while True:
-            line = await k.reader.readline()
-            if not line:
-                break
-            if self.sched.running is not None:
-                cid = self.sched.running.cid
-                self.log.append((time.perf_counter(), "ran", cid))
-                self._push(self.sched.ran(cid, json.loads(line)))
+        try:
+            while True:
+                line = await k.reader.readline()
+                if not line:
+                    break
+                if self.sched.running is not None:
+                    cid = self.sched.running.cid
+                    self.log.append((time.perf_counter(), "ran", cid))
+                    self._push(self.sched.ran(cid, json.loads(line)))
+        except (ConnectionError, OSError):
+            pass  # killed with unread input -> RST instead of EOF: the same death
         rc = await k.proc.wait()
         k.writer.close()
         if k.generation == self._generation:  # an old generation never reports twice
