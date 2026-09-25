@@ -4,6 +4,7 @@ import type { CellJson } from "./protocol";
 import { empty, reduce } from "./store";
 import { look, splitRefs } from "./status";
 import { place, underlined } from "./diagnostics";
+import { layers } from "./Graph";
 
 const cell = (id: number, over: Partial<CellJson> = {}): CellJson => ({
   id, kind: "python", code: "", status: "ok", error: "", output: "", previews: {}, defs: [], refs: [],
@@ -107,5 +108,13 @@ describe("diagnostics", () => {
     const lineOf = (pos: number) => doc.lineAt(pos).number;
     expect(underlined([a, b], lineOf, 2)).toEqual([a]);
     expect(underlined([a, b], lineOf, null)).toEqual([a, b]);
+  });
+});
+
+describe("graph layers", () => {
+  it("uses longest paths and keeps cycles compact", () => {
+    const d = layers([1, 2, 3, 4, 5, 6], [[1, 2], [2, 3], [1, 3], [4, 5], [5, 4], [5, 6]]);
+    expect([d.get(1), d.get(2), d.get(3)]).toEqual([0, 1, 2]);
+    expect(Math.max(d.get(4)!, d.get(5)!, d.get(6)!)).toBeLessThanOrEqual(1);
   });
 });

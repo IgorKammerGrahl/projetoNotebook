@@ -318,7 +318,15 @@ class Scheduler:
         for c in self.cells.values():
             c.ran_defs = set()  # the kernel's memory is gone
         roots = {cid for cid, c in self.cells.items() if c.ran_once or cid in self.queue}
-        return [Restart()] + self._schedule(roots)
+        actions = [Restart()] + self._schedule(roots)
+        # Values that will not come back (quarantined cell, blocked readers, never-ok cells)
+        # no longer exist anywhere: stop showing them (found in the browser check).
+        for cid, c in self.cells.items():
+            waiting = cid in self.queue or (self.running is not None and self.running.cid == cid)
+            if c.kind in GRAPH_KINDS and not waiting and (c.previews or c.output):
+                c.previews, c.output = {}, ""
+                self.changed.add(cid)
+        return actions
 
     # ---------------- internals ----------------
 
@@ -440,6 +448,7 @@ class Scheduler:
     def _drop(self, cid) -> list:
         c = self.cells[cid]
         names, c.ran_defs = sorted(c.ran_defs), set()
+        c.previews, c.output = {}, ""  # it will not run: whatever it showed no longer exists
         return [Delete(names)] if names else []
 
     def _resolve(self, cid, status, error) -> list:

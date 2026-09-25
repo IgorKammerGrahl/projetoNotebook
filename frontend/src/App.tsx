@@ -28,7 +28,7 @@ export function App() {
 
   // elapsed time of running / compiling cells, ticking every 100 ms
   const since = useRef(new Map<number, { status: Status; t: number }>());
-  const [now, setNow] = useState(Date.now());
+  const [, setTick] = useState(0);  // only forces a re-render; time is read at render
   for (const id of order) {
     const c = cells[id];
     const prev = since.current.get(id);
@@ -38,7 +38,7 @@ export function App() {
   const anyTimed = order.some((id) => TIMED.includes(cells[id].status));
   useEffect(() => {
     if (!anyTimed) return;
-    const t = setInterval(() => setNow(Date.now()), 100);
+    const t = setInterval(() => setTick((x) => x + 1), 100);
     return () => clearInterval(t);
   }, [anyTimed]);
 
@@ -70,7 +70,7 @@ export function App() {
           )}
           {order.map((id) => (
             <Cell key={id} cell={cells[id]} all={cells} edges={edges}
-                  elapsed={since.current.has(id) ? now - since.current.get(id)!.t : undefined}
+                  elapsed={since.current.has(id) ? Math.max(0, Date.now() - since.current.get(id)!.t) : undefined}
                   onEdit={(code) => send({ type: "edit", cid: id, code })}
                   onRun={() => run(id)}
                   onDelete={() => send({ type: "delete", cid: id })}

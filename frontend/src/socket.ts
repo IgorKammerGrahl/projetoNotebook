@@ -12,6 +12,7 @@ function reducer(state: NotebookState, a: Action): NotebookState {
 export function useNotebook(onMessage?: (m: ServerMsg) => void) {
   const [state, dispatch] = useReducer(reducer, empty);
   const ws = useRef<WebSocket | null>(null);
+  const outbox = useRef<ClientMsg[]>([]);  // messages sent while disconnected: flushed on reconnect
   const handler = useRef(onMessage);
   handler.current = onMessage;
 
@@ -21,7 +22,10 @@ export function useNotebook(onMessage?: (m: ServerMsg) => void) {
     const connect = () => {
       const sock = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws?token=${encodeURIComponent(token)}`);
       ws.current = sock;
-      sock.onopen = () => { delay = 250; };
+      sock.onopen = () => {
+        delay = 250;
+        for (const m of outbox.current.splice(0)) sock.send(JSON.stringify(m));
+      };
       sock.onmessage = (e) => {
         const m = JSON.parse(e.data) as ServerMsg;
         dispatch(m);
@@ -37,7 +41,14 @@ export function useNotebook(onMessage?: (m: ServerMsg) => void) {
   }, []);
 
   const send = useCallback((m: ClientMsg) => {
-    if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m));
+    if (ws.current?.readyState === WebSocket.OPEN) {
+      ws.current.send(JSON.stringify(m));
+      return;
+    }
+    // never drop a Shift+Enter or an edit silently; an edit carries the whole code,
+    // so only the latest one per cell needs to survive
+    if (m.type === "edit") outbox.current = outbox.current.filter((x) => !(x.type === "edit" && x.cid === m.cid));
+    outbox.current.push(m);
   }, []);
 
   return { state, send };

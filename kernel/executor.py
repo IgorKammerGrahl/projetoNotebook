@@ -3,6 +3,7 @@ Runs in-process (CLI, tests) or inside the kernel process (server)."""
 import contextlib
 import io
 import traceback
+import types
 
 import numpy as np
 
@@ -45,7 +46,9 @@ class Executor:
         status, error, output = run(req)
         if status != "ok":
             self.delete(req["defs"])
-        previews = {n: preview(self.ns[n]) for n in req["defs"] if n in self.ns} if status == "ok" else {}
+        # modules (`import numpy as np`) are graph definitions, but their preview is noise
+        previews = {n: preview(self.ns[n]) for n in req["defs"]
+                    if n in self.ns and not isinstance(self.ns[n], types.ModuleType)} if status == "ok" else {}
         return {"status": status, "error": error, "output": _truncate(output), "previews": previews}
 
     def _python(self, req):

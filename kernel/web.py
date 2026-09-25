@@ -7,6 +7,7 @@ hijacking) and the random token printed at startup.
 """
 import asyncio
 import json
+import logging
 import math
 import secrets
 from pathlib import Path
@@ -17,6 +18,7 @@ from .fmt import parse, serialize
 from .session import Session
 
 SAVE_DEBOUNCE = 1.0  # seconds after the last change (D-015)
+log = logging.getLogger("notebook.web")
 
 
 def _clean(obj):
@@ -51,7 +53,7 @@ class NotebookServer:
         self.port = port
         self.session = Session(self.path.parent / ".nbcache", core_dumps=core_dumps,
                                speculate_debounce=speculate_debounce)
-        self.clients: set[web.WebSocketResponse] = set()
+        self.clients: dict[web.WebSocketResponse, asyncio.Queue] = {}  # one ordered outbox per client
         self._save_handle = None
         self._runner = None
 
@@ -118,15 +120,35 @@ class NotebookServer:
             raise web.HTTPForbidden(text="forbidden: bad token")
         ws = web.WebSocketResponse(heartbeat=30)
         await ws.prepare(request)
-        self.clients.add(ws)
+        # Every message to this client goes through one queue and one writer task, so
+        # updates arrive in the order they were produced. Separate send tasks could be
+        # reordered (large frames are compressed in an executor, small ones are not).
+        outbox: asyncio.Queue = asyncio.Queue()
+        self.clients[ws] = outbox
+        writer = asyncio.create_task(self._writer(ws, outbox))
+        peer = request.remote
+        log.info("client connected: %s", peer)
         try:
-            await ws.send_json(self._snapshot())
+            outbox.put_nowait(self._snapshot())
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
-                    await self._handle(ws, json.loads(msg.data))
+                    m = json.loads(msg.data)
+                    log.debug("recv %s: %s", peer, {k: (v if k != "code" else f"<{len(v)} chars>") for k, v in m.items()})
+                    await self._handle(ws, m)
         finally:
-            self.clients.discard(ws)
+            self.clients.pop(ws, None)
+            writer.cancel()
+            log.info("client disconnected: %s", peer)
         return ws
+
+    @staticmethod
+    async def _writer(ws, outbox: asyncio.Queue):
+        while True:
+            msg = await outbox.get()
+            try:
+                await ws.send_json(msg)
+            except (ConnectionError, RuntimeError):
+                return  # closing: the handler cleans up
 
     def _snapshot(self):
         s = self.session.sched
@@ -152,16 +174,16 @@ class NotebookServer:
                 s.run_all()
             elif kind == "add":
                 cid = s.add(m.get("code", ""), m.get("kind", "python"), m.get("after"))
-                await ws.send_json({"type": "added", "cid": cid, "request": m.get("request")})
+                self.clients[ws].put_nowait({"type": "added", "cid": cid, "request": m.get("request")})
             elif kind == "delete":
                 s.delete(m["cid"])
             elif kind == "stop":
                 s.stop()
             else:
-                await ws.send_json({"type": "error", "error": f"unknown message type {kind!r}"})
+                self.clients[ws].put_nowait({"type": "error", "error": f"unknown message type {kind!r}"})
                 return
         except KeyError as e:
-            await ws.send_json({"type": "error", "error": f"bad message: missing or unknown {e}"})
+            self.clients[ws].put_nowait({"type": "error", "error": f"bad message: missing or unknown {e}"})
             return
         if kind == "delete":
             self._on_change({})  # nothing else may change: still tell clients the new `order`
@@ -172,8 +194,8 @@ class NotebookServer:
         msg = {"type": "update", "cells": [cell_json(cid, c, self.session.sched) for cid, c in changed.items()],
                "order": list(self.session.sched.cells), "edges": self._edges(),
                "kernel": self._kernel_state()}
-        for ws in list(self.clients):
-            asyncio.ensure_future(ws.send_json(msg))
+        for outbox in self.clients.values():
+            outbox.put_nowait(msg)
 
     # ---------------- file ----------------
 

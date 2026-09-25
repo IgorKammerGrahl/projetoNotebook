@@ -226,3 +226,12 @@ async def test_previews_of_non_json_types_do_not_kill_the_kernel(s):
     (c,) = s.sched.cells.values()
     assert c.status == "ok" and s.restarts == 0
     assert c.previews["z"]["head"] == ["(1+2j)", "3j"] and c.previews["t"]["head"] == ["2026-09-24"]
+
+
+@session_test
+async def test_modules_are_definitions_but_get_no_preview(s):
+    s.load([Cell("python", "import numpy as np\nx = np.int64(2)"), Cell("python", "y = np.zeros(1)")])
+    await s.idle()
+    first, second = s.sched.cells.values()
+    assert "np" in first.defs and "np" not in first.previews and "x" in first.previews
+    assert second.status == "ok"                        # np still reaches readers through the graph

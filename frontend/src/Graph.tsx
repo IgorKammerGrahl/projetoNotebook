@@ -7,16 +7,29 @@ import { scrollToCell } from "./Refs";
 const W = 132, H = 34, GX = 40, GY = 14;
 
 export function layers(ids: number[], edges: [number, number][]): Map<number, number> {
-  const depth = new Map(ids.map((id) => [id, 0]));
-  for (let i = 0; i < ids.length; i++) {  // longest path; bounded passes also terminate on cycles
-    let moved = false;
-    for (const [p, c] of edges) {
-      if (depth.has(p) && depth.has(c) && depth.get(c)! < depth.get(p)! + 1 && depth.get(p)! < ids.length) {
-        depth.set(c, depth.get(p)! + 1);
-        moved = true;
-      }
+  // Longest path over the acyclic part (Kahn). Cycle members and whatever hangs off
+  // them never become ready; they get one layer after their resolved parents, no iteration.
+  const inGraph = new Set(ids);
+  const es = edges.filter(([p, c]) => inGraph.has(p) && inGraph.has(c) && p !== c);
+  const indeg = new Map(ids.map((id) => [id, 0]));
+  for (const [, c] of es) indeg.set(c, indeg.get(c)! + 1);
+  const depth = new Map<number, number>();
+  const ready = ids.filter((id) => indeg.get(id) === 0);
+  for (const id of ready) depth.set(id, 0);
+  while (ready.length) {
+    const p = ready.shift()!;
+    for (const [q, c] of es) {
+      if (q !== p) continue;
+      depth.set(c, Math.max(depth.get(c) ?? 0, depth.get(p)! + 1));
+      indeg.set(c, indeg.get(c)! - 1);
+      if (indeg.get(c) === 0) ready.push(c);
     }
-    if (!moved) break;
+  }
+  for (const id of ids) {
+    if (indeg.get(id)! > 0) {  // on or behind a cycle
+      const placed = es.filter(([q, c]) => c === id && indeg.get(q) === 0).map(([q]) => depth.get(q)! + 1);
+      depth.set(id, Math.max(0, ...placed));
+    }
   }
   return depth;
 }

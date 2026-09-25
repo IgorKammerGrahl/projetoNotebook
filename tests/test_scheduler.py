@@ -348,3 +348,18 @@ def test_mojo_waiting_for_its_own_build_is_compiling_not_queued():
     finish(s, s.run(d))
     s.run(m)
     assert s.cells[m].status == "compiling" and m not in s.queue_positions
+
+
+
+def test_after_a_crash_values_that_will_not_come_back_are_not_shown():
+    s, (a, x, r) = sched(("python", "a = 1"), ("python", "x = a"), ("python", "y = x"))
+    acts = s.run_all()
+    s.ran(a, {**OK, "previews": {"a": {"repr": "1"}}})
+    s.ran(x, {**OK, "previews": {"x": {"repr": "1"}}})
+    s.ran(r, {**OK, "previews": {"y": {"repr": "1"}}})
+    s.run(x)                                   # x runs again and takes the kernel down
+    acts = s.kernel_died("SIGSEGV")
+    assert s.cells[x].previews == {}                               # quarantined
+    assert s.cells[a].previews == {"a": {"repr": "1"}}             # re-running: old value visible meanwhile
+    finish(s, acts)                                                # recovery: a re-runs, r gets blocked
+    assert s.cells[r].status == "blocked" and s.cells[r].previews == {}

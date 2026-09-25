@@ -79,11 +79,16 @@ def main():
                     help="extra allowed WebSocket Origin, e.g. http://localhost:5173 for the Vite dev server")
     sp.add_argument("--core-dumps", action="store_true",
                     help="debug: let a crashing kernel write a core dump (off by default: slows recovery ~0.5 s)")
+    sp.add_argument("--verbose", action="store_true",
+                    help="log connections and every message received from clients (debugging)")
     sp.add_argument("--speculate-debounce", type=float, default=0.3, metavar="SECONDS",
                     help="idle time after an edit before a Mojo cell builds in the background (default 0.3)")
     args = ap.parse_args()
     check_env()
     if args.cmd == "serve":
+        import logging
+        logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
+                            format="%(asctime)s %(name)s %(levelname)s %(message)s")
         with contextlib.suppress(KeyboardInterrupt):
             asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce))
         return

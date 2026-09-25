@@ -718,3 +718,59 @@ Os padrões foram ajustados para a largura de 4 px:
 - `modified`: **traços longos** (8 / 5).
 - Ícones: `lucide-react` com import individual por ícone. O sublinhado na linha
   do cursor aparece após 800 ms sem teclas, independente do debounce.
+
+### D-019 — implementação: onde divergiu (2026-09-25)
+
+Checado no navegador contra `examples/demo.nb.md`: os 10 estados, o crash, a
+interrupção, os diagnósticos em 2º plano e a regra da linha do cursor.
+
+**Divergências da proposta:**
+1. **Marcador de diagnóstico na calha:** `●` com `aria-label` e `title`, e não o
+   ícone `CircleAlert`. Os marcadores de calha do CodeMirror são DOM puro, fora
+   do React.
+2. **Grafo:** o nó mostra `[id] tipo` + o ícone do estado. O texto curto do
+   estado fica no tooltip (`<title>`), não no nó, que em 132 px não comporta
+   "vai reexecutar · aguardando [3]".
+3. **Texto de `multiple-definition`:** "`x` também definido em [13]", do ponto
+   de vista de cada célula, em vez de "`x` definido em [12] e [13]".
+4. **Sem estado "reiniciando…" no topo:** o servidor não expõe esse momento (um
+   reinício leva ~100 ms). A barra mostra o número de reinícios, e a célula
+   culpada mostra `crashed` ou `interrupted`.
+5. **Botão "rodar tudo"** no topo: não estava na D-019. É útil para ver
+   `queued` e `stale`.
+6. **Markdown** renderizado com `marked` + `DOMPurify`: duas dependências a mais,
+   não previstas.
+7. **HTML** num iframe de altura fixa (160 px), redimensionável. Com
+   `sandbox=""` (sem `allow-same-origin`), a página não consegue medir o
+   conteúdo para ajustar a altura.
+8. **`aria-live`** anuncia só o resultado de execuções pedidas por este cliente
+   (Shift+Enter ou o botão ▶), e não as que vêm de "rodar tudo" ou da
+   recuperação de um crash.
+9. **Editor com foco nunca é sobrescrito** pelo código que vem do servidor
+   (suposição de um único editor por célula). Sem foco, o texto é sincronizado.
+10. **Previews de módulos** (`import numpy as np`) não aparecem: eram só ruído.
+    Mudança no backend, com teste pelo caminho real.
+
+**Bugs achados na checagem no navegador (corrigidos, com teste quando cabia):**
+- A coluna de células era espremida pelo painel do grafo: faltava largura
+  máxima no painel e largura mínima na coluna.
+- Células em ciclo iam para a última camada do grafo, por causa do cálculo de
+  camadas por passes. Trocado por Kahn; teste em vitest.
+- O cronômetro mostrava "-83,7 s" no primeiro quadro: o tempo era calculado com
+  um `now` guardado na última atividade. Agora é calculado no render.
+- **Previews de valores que não existem mais:** a célula em quarentena e os
+  leitores bloqueados continuavam mostrando valores de antes do crash. Toda
+  célula resolvida sem rodar perde previews e saída; teste na máquina de estados.
+- **Ordem das mensagens ao cliente:** o servidor mandava cada atualização numa
+  task própria. Frames grandes são comprimidos num executor e os pequenos não, o
+  que podia inverter a ordem (um `running` chegando depois do `ok`). Agora há
+  uma fila e uma task escritora por cliente.
+- **Mensagens enviadas desconectado eram descartadas em silêncio** (um
+  Shift+Enter durante uma reconexão sumia). Agora ficam numa fila e são enviadas
+  na reconexão; das edições, só a última por célula.
+
+**Observado e não reproduzido:** uma vez, um clique em "parar" (e, antes, uma
+edição digitada) saiu do navegador com o socket `OPEN` e não teve efeito no
+servidor. A mesma sequência, repetida no navegador, numa `Session` e num
+`NotebookServer` com cliente WebSocket, funcionou. `serve --verbose` agora
+registra cada mensagem recebida, para pegar o caso se voltar.

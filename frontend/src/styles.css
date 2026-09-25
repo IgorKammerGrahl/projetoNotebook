@@ -26,8 +26,8 @@ button:focus-visible, .node:focus-visible { outline: 2px solid var(--running); o
 .topbar { position: sticky; top: 0; z-index: 2; display: flex; gap: 10px; align-items: center;
           padding: 8px 16px; background: var(--bg-subtle); border-bottom: 1px solid var(--border); }
 .body { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
-.cells { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; max-width: 980px; }
-.graph-panel { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto;
+.cells { flex: 1; min-width: 480px; display: flex; flex-direction: column; gap: 10px; max-width: 980px; }
+.graph-panel { flex: 0 1 auto; max-width: 38vw; position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto;
                border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--bg-subtle); }
 
 /* ---- a cell: 4 px rail on the left (none for ok/idle: silent by default) ---- */
