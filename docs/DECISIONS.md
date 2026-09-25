@@ -552,3 +552,36 @@ faz):
   `modified`. Toda entrada ou saída de `modified` inclui os descendentes no
   broadcast, para a flag chegar ao frontend.
 - Testes: 7 na máquina de estados e 1 pelo WebSocket.
+
+## D-018 — Builds especulativos com prioridade reduzida e preemptíveis (2026-09-25, revisão)
+
+- O debounce especulativo é de **300 ms**, configurável
+  (`serve --speculate-debounce`).
+- **Build especulativo** roda sob `nice -n 10` (a árvore de processos do
+  `mojo build` herda). **Build explícito** (Shift+Enter) roda na prioridade do
+  servidor.
+- **Slots:** `max_builds = max(1, nproc // 4)`. Um build explícito que encontra
+  todos os slots ocupados por builds especulativos **mata um deles** e fica com a
+  vaga. Um especulativo nunca preempta outro e, na fila, cede a vez a qualquer
+  explícito que esteja esperando.
+- **Promoção:** um run que encontra um build especulativo do mesmo código em
+  andamento emite `Promote`, e o build deixa de ser preemptível.
+  - Se a preempção vencer a corrida contra a promoção, `build_dropped()` refaz o
+    build na hora, como explícito. Sem isso, a célula ficaria esperando um build
+    que ninguém mais faz.
+  - O build especulativo preemptado é reagendado com o mesmo debounce, e o
+    binário acaba pronto.
+- **Limite:** um build promovido continua com `nice 10`, porque baixar o nice
+  exige `CAP_SYS_NICE`. Sob contenção, ele roda um pouco mais devagar.
+- **Diagnósticos:** os de compilação só são substituídos quando um build do
+  código atual termina. Os de interface seguem cada edição. No protocolo, cada
+  diagnóstico leva um `source`.
+- **Nota de ambiente:** nesta máquina, o `ananicy-cpp` põe a sessão em nice −4.
+  Os testes afirmam prioridades **relativas** (explícito = servidor,
+  especulativo > servidor), não valores absolutos.
+- Testes com 1 slot:
+  - o especulativo de A não atrasa o Shift+Enter de B além do build de B, e A é
+    reconstruído depois;
+  - prioridade de explícito e de especulativo lida em `/proc`;
+  - um build promovido não é preemptado;
+  - um especulativo não preempta outro especulativo.

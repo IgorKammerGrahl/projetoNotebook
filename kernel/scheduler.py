@@ -3,7 +3,10 @@
 No I/O. Events come in as method calls (edit, run, compiled, ran, kernel_died,
 stop...); each returns the actions the driver must perform, in order:
 
-    Compile  build a Mojo cell (may run in parallel, may be cancelled)
+    Compile  build a Mojo cell (may run in parallel, may be cancelled; `speculative`
+             builds run niced and may be preempted by explicit ones)
+    Promote  an in-flight speculative build is now needed by a run: stop treating it
+             as preemptible
     Cancel   kill an in-flight build
     Exec     run one cell in the executor (one at a time)
     Delete   drop names from the executor's namespace
@@ -28,6 +31,12 @@ _UNSAFE = re.compile(r"\bunsafe_\w+")
 class Compile:
     cid: int
     code: str
+    speculative: bool = False
+
+
+@dataclass
+class Promote:
+    cid: int
 
 
 @dataclass
@@ -227,7 +236,17 @@ class Scheduler:
         actions = [Cancel(cid)] if c.compiling else []
         c.compiling = c.code
         self.changed.add(cid)  # `compiling` flag for the frontend
-        return actions + [Compile(cid, c.code)]
+        return actions + [Compile(cid, c.code, speculative=True)]
+
+    def build_dropped(self, cid: int, code: str) -> list:
+        """A build was killed by the driver without a result (preempted). If a run is
+        waiting on it (it may have been promoted too late), rebuild explicitly now."""
+        c = self.cells.get(cid)
+        if c is None or c.compiling != code:
+            return []
+        c.compiling = None
+        self.changed.add(cid)
+        return self._ensure_compiled(cid) if cid in self.queue else []
 
     def compiled(self, cid: int, code: str, artifact=None, error: str = "", diagnostics=()) -> list:
         c = self.cells.get(cid)
@@ -412,7 +431,7 @@ class Scheduler:
             return []
         self._set(cid, "compiling")
         if c.compiling == c.code:
-            return []  # a (speculative) build of exactly this code is in flight: wait for it
+            return [Promote(cid)]  # a speculative build of exactly this code is in flight: keep it
         actions = [Cancel(cid)] if c.compiling else []
         c.compiling = c.code
         return actions + [Compile(cid, c.code)]

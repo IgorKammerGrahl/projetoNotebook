@@ -17,7 +17,7 @@ from pathlib import Path
 
 from . import mojo
 from .fmt import Cell
-from .scheduler import Cancel, Compile, Delete, Exec, Kill, Restart, Scheduler
+from .scheduler import Cancel, Compile, Delete, Exec, Kill, Promote, Restart, Scheduler
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -56,7 +56,14 @@ class Session:
         self.compiles = 0
         self.log: list[tuple[float, str, object]] = []  # (time, event, detail) for tests/benchmarks
         self.listeners = []                               # fn(changed: dict[cid, CellState]) per step
-        self._sem = asyncio.Semaphore(self.max_builds)
+        self.speculative_nice = 10
+        # Build slots (review): speculative builds are niced and preemptible. An explicit
+        # build that finds every slot taken by speculative ones kills one and takes its slot.
+        self._slots: set[int] = set()              # cids whose build holds a slot
+        self._slot_cond = asyncio.Condition()
+        self._explicit_waiting = 0
+        self._speculative: dict[int, bool] = {}    # cid -> its current build is speculative
+        self._preempted: set[int] = set()
         self._builds: dict[int, asyncio.Task] = {}
         self._actions: asyncio.Queue = asyncio.Queue()
         self._idle = asyncio.Event()
@@ -106,13 +113,17 @@ class Session:
 
     def edit(self, cid: int, code: str):
         self._push(self.sched.edit(cid, code))
-        if self.sched.cells[cid].kind == "mojo":  # debounce: every edit restarts the timer
-            old = self._spec_timers.pop(cid, None)
-            if old:
-                old.cancel()
-            self._spec_timers[cid] = asyncio.get_running_loop().call_later(
-                self.speculate_debounce, self._speculate, cid)
-            self._after()
+        if self.sched.cells[cid].kind == "mojo":
+            self._arm_speculation(cid)
+
+    def _arm_speculation(self, cid: int):
+        """Debounce: every call restarts the cell's timer."""
+        old = self._spec_timers.pop(cid, None)
+        if old:
+            old.cancel()
+        self._spec_timers[cid] = asyncio.get_running_loop().call_later(
+            self.speculate_debounce, self._speculate, cid)
+        self._after()
 
     def _speculate(self, cid: int):
         self._spec_timers.pop(cid, None)
@@ -163,7 +174,14 @@ class Session:
             old = self._builds.pop(a.cid, None)
             if old:
                 old.cancel()
-            self._builds[a.cid] = asyncio.create_task(self._build(a.cid, a.code))
+            self._speculative[a.cid] = a.speculative
+            self._builds[a.cid] = asyncio.create_task(self._build(a.cid, a.code, a.speculative))
+        elif isinstance(a, Promote):
+            if a.cid in self._builds:
+                self._speculative[a.cid] = False
+                self.log.append((time.perf_counter(), "build-promoted", a.cid))
+                async with self._slot_cond:
+                    self._slot_cond.notify_all()  # a promoted waiter may now preempt
         elif isinstance(a, Cancel):
             t = self._builds.pop(a.cid, None)
             if t:
@@ -182,24 +200,65 @@ class Session:
             if self._kernel.proc.returncode is None:
                 self._kernel.proc.kill()
 
-    async def _build(self, cid: int, code: str):
+    async def _acquire_slot(self, cid: int):
+        counted = False  # counted as an explicit waiter (it may be promoted while waiting)
+        async with self._slot_cond:
+            try:
+                while True:
+                    explicit = not self._speculative.get(cid, False)
+                    if explicit and not counted:
+                        self._explicit_waiting, counted = self._explicit_waiting + 1, True
+                    others_waiting = self._explicit_waiting - (1 if counted else 0)
+                    if len(self._slots) < self.max_builds and (explicit or others_waiting == 0):
+                        self._slots.add(cid)
+                        return
+                    if explicit and len(self._slots) >= self.max_builds:
+                        victim = next((c for c in self._slots
+                                       if self._speculative.get(c) and c not in self._preempted), None)
+                        if victim is not None:
+                            self._preempted.add(victim)
+                            self._builds[victim].cancel()
+                    await self._slot_cond.wait()
+            finally:
+                if counted:
+                    self._explicit_waiting -= 1
+
+    async def _release_slot(self, cid: int):
+        async with self._slot_cond:
+            self._slots.discard(cid)
+            self._slot_cond.notify_all()
+
+    async def _build(self, cid: int, code: str, speculative: bool = False):
         me = asyncio.current_task()
+        held = False
         try:
-            async with self._sem:
-                self.log.append((time.perf_counter(), "build-start", cid))
-                try:
-                    art, built = await mojo.build_async(code, self.cache_dir)
-                    self.compiles += built
-                    result = {"artifact": asdict(art)}
-                except mojo.CompileError as e:
-                    result = {"error": str(e), "diagnostics": e.diagnostics}
-                self.log.append((time.perf_counter(), "build-end", cid))
+            await self._acquire_slot(cid)
+            held = True
+            nice = self.speculative_nice if self._speculative.get(cid) else 0
+            self.log.append((time.perf_counter(), "build-start", cid))
+            try:
+                art, built = await mojo.build_async(code, self.cache_dir, nice=nice)
+                self.compiles += built
+                result = {"artifact": asdict(art)}
+            except mojo.CompileError as e:
+                result = {"error": str(e), "diagnostics": e.diagnostics}
+            self.log.append((time.perf_counter(), "build-end", cid))
         except asyncio.CancelledError:
-            self.log.append((time.perf_counter(), "build-killed", cid))
+            if cid in self._preempted:
+                self._preempted.discard(cid)
+                self.log.append((time.perf_counter(), "build-preempted", cid))
+                self._push(self.sched.build_dropped(cid, code))
+                if cid in self.sched.cells and self.sched.cells[cid].compiling is None:
+                    self._arm_speculation(cid)  # try again once the slot frees up
+            else:
+                self.log.append((time.perf_counter(), "build-killed", cid))
             return
         finally:
+            if held:
+                await asyncio.shield(self._release_slot(cid))
             if self._builds.get(cid) is me:
                 del self._builds[cid]
+                self._speculative.pop(cid, None)
         self._push(self.sched.compiled(cid, code, **result))
 
     async def _start_kernel(self):

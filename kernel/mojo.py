@@ -254,7 +254,7 @@ def _loader_for(so: Path) -> str:
     return "cdll" if r.returncode == 0 and not _PY_SYMBOL.search(r.stdout) else "pydll"
 
 
-async def build_async(code: str, cache_dir: Path) -> tuple[Artifact, bool]:
+async def build_async(code: str, cache_dir: Path, nice: int = 0) -> tuple[Artifact, bool]:
     """Compile a cell (or hit the disk cache). Returns (artifact, compiled_now).
     Cancellation kills the build's process group; only a successful build is
     published, via atomic rename (D-014)."""
@@ -269,8 +269,10 @@ async def build_async(code: str, cache_dir: Path) -> tuple[Artifact, bool]:
     src = cache_dir / f"{key}.mojo"
     src.write_text(generate(code, parse_interface(code)))
     tmp = cache_dir / f"{key}.{uuid.uuid4().hex}.tmp"
+    # nice > 0: speculative build, lower CPU priority (its whole process tree inherits it)
+    prefix = ["nice", "-n", str(nice)] if nice and shutil.which("nice") else []
     proc = await asyncio.create_subprocess_exec(
-        "mojo", "build", "-O3", "--emit", "shared-lib", str(src), "-o", str(tmp),
+        *prefix, "mojo", "build", "-O3", "--emit", "shared-lib", str(src), "-o", str(tmp),
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT, start_new_session=True)
     try:
         out, _ = await proc.communicate()
