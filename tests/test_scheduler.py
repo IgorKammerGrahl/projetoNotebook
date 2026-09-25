@@ -47,7 +47,7 @@ def test_only_one_exec_at_a_time():
     s, (a, b) = sched(("python", "a = 1"), ("python", "z = 2"))
     acts = s.run_all()
     assert execs(acts) == [a]
-    assert s.cells[b].status == "stale"
+    assert s.cells[b].status == "queued"          # independent: inputs ready, waits for the kernel
     assert execs(s.ran(a, OK)) == [b]
 
 
@@ -327,3 +327,24 @@ def test_compile_diagnostics_are_replaced_only_when_a_build_finishes():  # revie
     assert [d["message"] for d in s.cells[m].diagnostics] == ["old"]   # obsolete build: ignored
     s.compiled(m, v2, artifact={"so": "x", "loader": "cdll"})          # this build finishing replaces them
     assert s.cells[m].diagnostics == []
+
+
+
+# ---------------- queued vs stale (D-019) ----------------
+
+def test_queued_means_ready_and_waiting_for_the_kernel_with_position():
+    s, (a, x, y, child) = sched(("python", "a = 1"), ("python", "x = 2"), ("python", "y = 3"), ("python", "c = a"))
+    s.run_all()
+    assert s.running.cid == a
+    assert [s.cells[c].status for c in (x, y, child)] == ["queued", "queued", "stale"]
+    assert s.queue_positions == {x: 1, y: 2}
+    s.ran(a, OK)                                   # x runs; child's input is now ready
+    assert s.running.cid == x
+    assert s.cells[child].status == "queued" and s.queue_positions == {y: 1, child: 2}
+
+
+def test_mojo_waiting_for_its_own_build_is_compiling_not_queued():
+    s, (d, m) = sched(("python", "xs = 1"), ("mojo", MOJO))
+    finish(s, s.run(d))
+    s.run(m)
+    assert s.cells[m].status == "compiling" and m not in s.queue_positions

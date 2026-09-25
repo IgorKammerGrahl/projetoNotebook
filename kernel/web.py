@@ -36,7 +36,8 @@ def cell_json(cid, c, sched) -> dict:
                    # review item 6: values kept, but computed from outdated upstream code
                    "upstream_modified": sched.upstream_modified(cid),
                    # review item 7: speculative build in flight / its errors as editor diagnostics
-                   "compiling": c.compiling is not None, "diagnostics": c.diagnostics})
+                   "compiling": c.compiling is not None, "diagnostics": c.diagnostics,
+                   "queue_position": sched.queue_positions.get(cid)})
 
 
 class NotebookServer:

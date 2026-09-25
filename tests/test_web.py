@@ -118,6 +118,7 @@ async def test_snapshot_edit_run_and_save(srv, http, path):
     await ws.send_json({"type": "edit", "cid": a, "code": "a = 100"})
     m = await recv_until(ws, lambda m: any(c["id"] == a and c["status"] == "modified" for c in m.get("cells", [])))
     child = next(c for c in m["cells"] if c["id"] == b)          # review item 6: flag reaches the frontend
+    assert "queue_position" in child
     assert child["status"] == "ok" and child["upstream_modified"] == [a] and child["previews"]["b"]["repr"] == "21"
     await ws.send_json({"type": "run", "cid": a})
     m = await recv_until(ws, lambda m: any(c["id"] == b and c["status"] == "ok" for c in m.get("cells", [])))

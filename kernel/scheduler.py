@@ -172,6 +172,7 @@ class Scheduler:
         self.orphan_deaths = 0
         self.kernel_dead = False
         self.changed: set[int] = set()         # for the driver to broadcast
+        self.queue_positions: dict[int, int] = {}  # queued cell -> 1-based place in line
         self._ids = itertools.count(1)
 
     # ---------------- events ----------------
@@ -486,8 +487,34 @@ class Scheduler:
                     c.ran_defs, c.defs_at_run, c.ran_code = set(), set(c.defs), c.code
                     self.running = ex
                     self._set(cid, "running")
+                    self._label_waiting()
                     return actions + [ex]
                 break  # the queue changed: recompute the order
             else:
+                self._label_waiting()
                 return actions  # nothing more can move until an event arrives
+        self._label_waiting()
         return actions
+
+    def _label_waiting(self):
+        """D-019: what is each planned cell waiting for? `stale` = an ancestor still has
+        to run; `compiling` = its own build; `queued` = inputs ready, only the kernel is
+        busy (with a 1-based position in line)."""
+        parents, children, _ = self._graph()
+        pos = {c: i for i, c in enumerate(self.cells)}
+        pending = self.queue | ({self.running.cid} if self.running else set())
+        order, _, _ = toposort(set(self.queue), parents, children, pos)
+        self.queue_positions = {}
+        for cid in order:
+            c = self.cells[cid]
+            if parents[cid] & pending:
+                status = "compiling" if c.compiling else "stale"
+            elif c.kind == "mojo" and c.artifact_code != c.code:
+                status = "compiling"
+            else:
+                status = "queued"
+                self.queue_positions[cid] = len(self.queue_positions) + 1
+            if c.status != status:
+                self._set(cid, status)
+            elif status == "queued":
+                self.changed.add(cid)  # the position may have moved
