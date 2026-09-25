@@ -46,7 +46,8 @@ class _Kernel:
 
 
 class Session:
-    def __init__(self, cache_dir: Path | str, max_builds: int | None = None, core_dumps: bool = False):
+    def __init__(self, cache_dir: Path | str, max_builds: int | None = None, core_dumps: bool = False,
+                 speculate_debounce: float = 0.3):
         self.sched = Scheduler()
         self.core_dumps = core_dumps  # debug: let a crashing kernel write a core dump
         self.cache_dir = Path(cache_dir)
@@ -62,7 +63,7 @@ class Session:
         self._kernel: _Kernel | None = None
         self._generation = 0
         self._tasks: list[asyncio.Task] = []
-        self.speculate_debounce = 0.8  # review item 7: background Mojo build after ~800 ms idle
+        self.speculate_debounce = speculate_debounce  # background Mojo build after this idle time (s)
         self._spec_timers: dict[int, asyncio.TimerHandle] = {}
 
     # ---------------- lifecycle ----------------

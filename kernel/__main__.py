@@ -54,11 +54,12 @@ def run(path: str) -> int:
     return 1 if failed else 0
 
 
-async def serve(path: str, port: int, dev_origins: list[str], core_dumps: bool = False):
+async def serve(path: str, port: int, dev_origins: list[str], core_dumps: bool = False,
+                speculate_debounce: float = 0.3):
     from .web import NotebookServer
     static = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     srv = NotebookServer(Path(path), port=port, static_dir=static, extra_origins=tuple(dev_origins),
-                         core_dumps=core_dumps)
+                         core_dumps=core_dumps, speculate_debounce=speculate_debounce)
     await srv.start()
     print(f"notebook: {srv.url}", flush=True)
     try:
@@ -78,11 +79,13 @@ def main():
                     help="extra allowed WebSocket Origin, e.g. http://localhost:5173 for the Vite dev server")
     sp.add_argument("--core-dumps", action="store_true",
                     help="debug: let a crashing kernel write a core dump (off by default: slows recovery ~0.5 s)")
+    sp.add_argument("--speculate-debounce", type=float, default=0.3, metavar="SECONDS",
+                    help="idle time after an edit before a Mojo cell builds in the background (default 0.3)")
     args = ap.parse_args()
     check_env()
     if args.cmd == "serve":
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps))
+            asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce))
         return
     sys.exit(run(args.path))
 

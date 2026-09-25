@@ -83,7 +83,16 @@ class CellState:
     artifact_code: str | None = None
     compiling: str | None = None      # Mojo: code of the in-flight build
     ran_code: str | None = None       # code of the last Exec (None: never executed)
-    diagnostics: list = field(default_factory=list)  # Mojo: [{line, col, message}] for the current code
+    # Mojo diagnostics, [{line, col, message}]. Compile ones are replaced only when a build
+    # finishes (never cleared at a build's start or on an edit); interface ones come from
+    # the instant `run` grammar check on every edit.
+    compile_diagnostics: list = field(default_factory=list)
+    interface_diagnostics: list = field(default_factory=list)
+
+    @property
+    def diagnostics(self) -> list:
+        return ([{**d, "source": "interface"} for d in self.interface_diagnostics]
+                + [{**d, "source": "compile"} for d in self.compile_diagnostics])
     before_edit: tuple = ("idle", "") # (status, error) to restore if edited back to ran_code
 
 
@@ -179,7 +188,8 @@ class Scheduler:
         c.defs_at_run |= c.defs  # readers/co-definers of names it drops must re-run on the next run
         c.code, c.defs, c.refs, c.syntax_error = new.code, new.defs, new.refs, new.syntax_error
         c.quarantine = ""
-        c.diagnostics = _interface_diagnostics(c.syntax_error) if c.kind == "mojo" and c.syntax_error else []
+        c.interface_diagnostics = (_interface_diagnostics(c.syntax_error)
+                                   if c.kind == "mojo" and c.syntax_error else [])
         if cid in self.queue:
             actions += self._ensure_compiled(cid)  # runs the new code when its turn comes
         elif self.running is None or self.running.cid != cid:
@@ -224,7 +234,7 @@ class Scheduler:
         if c is None or c.compiling != code:
             return []  # obsolete: the cell was edited, deleted or rebuilt meanwhile
         c.compiling = None
-        c.diagnostics = list(diagnostics) or ([{"line": 1, "col": 1, "message": error}] if error else [])
+        c.compile_diagnostics = list(diagnostics) or ([{"line": 1, "col": 1, "message": error}] if error else [])
         self.changed.add(cid)
         actions = []
         if error:

@@ -291,7 +291,7 @@ def test_speculative_error_is_a_diagnostic_not_a_result():
     s.compiled(m, MOJO, error="line 2:5: error: boom",
                diagnostics=[{"line": 2, "col": 5, "message": "boom"}])
     assert s.cells[m].status == "idle" and s.cells[m].error == ""
-    assert s.cells[m].diagnostics == [{"line": 2, "col": 5, "message": "boom"}]
+    assert s.cells[m].diagnostics == [{"line": 2, "col": 5, "message": "boom", "source": "compile"}]
     assert s.cells[r].status == "idle"                                # nothing blocked
 
 
@@ -305,10 +305,25 @@ def test_run_during_speculative_build_waits_for_it():
     assert execs(s.compiled(m, MOJO, artifact={"so": "x", "loader": "cdll"})) == [m]
 
 
-def test_edit_clears_old_diagnostics_and_reports_interface_errors_at_once():
+def test_interface_diagnostics_follow_every_edit_at_once():
     s, (m,) = sched(("mojo", MOJO))
-    s.cells[m].diagnostics = [{"line": 9, "col": 1, "message": "old"}]
     s.edit(m, MOJO.replace("mut total: Float64", "mut total: Complex"))
-    assert s.cells[m].diagnostics[0]["line"] == 1 and "Complex" in s.cells[m].diagnostics[0]["message"]
+    (d,) = s.cells[m].diagnostics
+    assert d["source"] == "interface" and d["line"] == 1 and "Complex" in d["message"]
     s.edit(m, MOJO)
+    assert s.cells[m].diagnostics == []
+
+
+def test_compile_diagnostics_are_replaced_only_when_a_build_finishes():  # review, item 3
+    s, (m,) = sched(("mojo", MOJO))
+    s.speculate(m)
+    s.compiled(m, MOJO, error="e", diagnostics=[{"line": 2, "col": 3, "message": "old"}])
+    v2 = MOJO + "\n    # v2"
+    s.edit(m, v2)                                     # an edit does not clear them
+    assert [d["message"] for d in s.cells[m].diagnostics] == ["old"]
+    s.speculate(m)                                    # nor does the start of a build
+    assert s.cells[m].compiling == v2 and [d["message"] for d in s.cells[m].diagnostics] == ["old"]
+    s.compiled(m, MOJO, error="obsolete", diagnostics=[{"line": 9, "col": 1, "message": "stale"}])
+    assert [d["message"] for d in s.cells[m].diagnostics] == ["old"]   # obsolete build: ignored
+    s.compiled(m, v2, artifact={"so": "x", "loader": "cdll"})          # this build finishing replaces them
     assert s.cells[m].diagnostics == []

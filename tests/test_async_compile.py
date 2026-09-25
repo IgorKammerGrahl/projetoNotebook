@@ -117,7 +117,7 @@ async def test_independent_cells_compile_in_parallel(s, cache):
 
 @session_run
 async def test_speculative_build_is_debounced_and_reused_by_run(s, cache):
-    s.speculate_debounce = 0.3
+    assert s.speculate_debounce == 0.3                  # review: 300 ms default
     s.load([Cell("python", "a = 4")])
     await s.idle()
     m = s.add(cell(), "mojo")
