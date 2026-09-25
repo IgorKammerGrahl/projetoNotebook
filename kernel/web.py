@@ -163,6 +163,8 @@ class NotebookServer:
         except KeyError as e:
             await ws.send_json({"type": "error", "error": f"bad message: missing or unknown {e}"})
             return
+        if kind == "delete":
+            self._on_change({})  # nothing else may change: still tell clients the new `order`
         if kind in ("edit", "add", "delete"):
             self._schedule_save()
 

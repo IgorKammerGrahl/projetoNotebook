@@ -196,3 +196,15 @@ def test_protocol_exposes_compiling_flag_and_diagnostics(tmp_path):  # review it
         await ws.close()
 
     body(tmp_path)
+
+
+
+@with_server
+async def test_delete_always_broadcasts_the_new_order(srv, http, path):
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    snap = await ws.receive_json()
+    md = snap["cells"][0]["id"]                     # a markdown cell: deleting it changes nothing else
+    await ws.send_json({"type": "delete", "cid": md})
+    m = await recv_until(ws, lambda m: m["type"] == "update" and md not in m["order"])
+    assert len(m["order"]) == 2
+    await ws.close()

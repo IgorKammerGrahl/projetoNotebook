@@ -1,0 +1,99 @@
+/* D-019 tokens; contrast verified by frontend/contrast_check.py */
+:root {
+  --bg: #ffffff; --bg-subtle: #f6f8fa; --fg: #1f2328; --border: #d0d7de; --muted: #57606a;
+  --queued: #57606a; --compiling: #8250df; --running: #0969da; --modified: #9a6700;
+  --error: #cf222e; --blocked: #bc4c00; --crashed: #bf3989; --interrupted: #7d4e00;
+  --diag: #cf222e;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #0d1117; --bg-subtle: #161b22; --fg: #e6edf3; --border: #30363d; --muted: #8b949e;
+    --queued: #8b949e; --compiling: #a371f7; --running: #58a6ff; --modified: #d29922;
+    --error: #f85149; --blocked: #f0883e; --crashed: #db61a2; --interrupted: #bb8009; --diag: #f85149;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--fg); font: 14px/1.45 system-ui, sans-serif; }
+button { font: inherit; color: var(--fg); background: var(--bg-subtle); border: 1px solid var(--border);
+         border-radius: 6px; padding: 3px 10px; cursor: pointer; display: inline-flex; gap: 4px; align-items: center; }
+button:disabled { opacity: .45; cursor: default; }
+button:focus-visible, .node:focus-visible { outline: 2px solid var(--running); outline-offset: 2px; }
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+.muted { color: var(--muted); }
+.spacer { flex: 1; }
+
+.topbar { position: sticky; top: 0; z-index: 2; display: flex; gap: 10px; align-items: center;
+          padding: 8px 16px; background: var(--bg-subtle); border-bottom: 1px solid var(--border); }
+.body { display: flex; gap: 16px; padding: 16px; align-items: flex-start; }
+.cells { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 10px; max-width: 980px; }
+.graph-panel { position: sticky; top: 64px; max-height: calc(100vh - 80px); overflow: auto;
+               border: 1px solid var(--border); border-radius: 8px; padding: 8px; background: var(--bg-subtle); }
+
+/* ---- a cell: 4 px rail on the left (none for ok/idle: silent by default) ---- */
+.cell { --tone: var(--border); position: relative; border: 1px solid var(--border); border-radius: 8px;
+        padding: 6px 10px 6px 14px; background: var(--bg); }
+.cell::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; border-radius: 8px 0 0 8px; }
+.rail-solid::before { background: var(--tone); }
+.rail-thick::before { background: var(--tone); width: 6px; }
+.rail-dashed::before { background: repeating-linear-gradient(to bottom, var(--tone) 0 8px, transparent 8px 13px); }
+.rail-stripes::before { background: repeating-linear-gradient(to bottom, var(--tone) 0 3px, transparent 3px 6px); }
+.rail-none::before { display: none; }
+.tone-queued { --tone: var(--queued); } .tone-compiling { --tone: var(--compiling); }
+.tone-running { --tone: var(--running); } .tone-modified { --tone: var(--modified); }
+.tone-error { --tone: var(--error); } .tone-blocked { --tone: var(--blocked); }
+.tone-crashed { --tone: var(--crashed); } .tone-interrupted { --tone: var(--interrupted); }
+.tone-muted { --tone: var(--muted); }
+.tone-running.rail-solid::before { animation: pulse 1.6s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .45; } }
+.flash { animation: flash 1s ease-out; }
+@keyframes flash { from { box-shadow: 0 0 0 3px var(--running); } to { box-shadow: 0 0 0 0 transparent; } }
+
+.cell-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; }
+.cell-id { color: var(--muted); font: 12px ui-monospace, monospace; margin-right: 4px; }
+.chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
+        font-size: 12.5px; color: var(--tone); background: var(--bg-subtle); border: 1px solid var(--tone); }
+.chip.outlined { background: transparent; border-style: dashed; }
+.icon-btn { padding: 3px 6px; background: transparent; border-color: transparent; }
+.icon-btn:hover { border-color: var(--border); }
+.ref { padding: 0 2px; border: 0; background: none; color: inherit; text-decoration: underline; font: inherit; }
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.editor { border: 1px solid var(--border); border-radius: 6px; margin: 6px 0; overflow: hidden; }
+.editor .cm-editor { background: var(--bg); color: var(--fg); }
+.editor .cm-gutters { background: var(--bg-subtle); color: var(--muted); border-right: 1px solid var(--border); }
+.cm-diag { text-decoration: underline wavy var(--diag); text-decoration-skip-ink: none; text-underline-offset: 3px; }
+.cm-diag-gutter { width: 14px; }
+.cm-diag-marker { color: var(--diag); cursor: help; font-size: 11px; }
+
+.output { border-top: 1px solid var(--border); padding-top: 6px; margin-top: 4px; }
+.output.dim { opacity: .6; }
+.output.outdated { border-top: 2px dashed var(--modified); }
+.stdout { margin: 0 0 6px; white-space: pre-wrap; font: 12.5px ui-monospace, monospace; }
+.previews { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; font: 12.5px ui-monospace, monospace; }
+.previews dt { font-weight: 600; } .previews dd { margin: 0; overflow-wrap: anywhere; }
+.type { color: var(--muted); margin-right: 6px; }
+.error-panel { margin: 6px 0 0; padding: 8px; border-left: 3px solid var(--tone); background: var(--bg-subtle);
+               white-space: pre-wrap; font: 12.5px ui-monospace, monospace; }
+.rendered { cursor: text; padding: 4px 0; }
+.markdown > :first-child { margin-top: 0; } .markdown > :last-child { margin-bottom: 0; }
+.html-frame { width: 100%; height: 160px; border: 1px solid var(--border); border-radius: 6px; resize: vertical; background: #fff; }
+.add-row { display: flex; gap: 6px; margin-top: 6px; opacity: 0; transition: opacity .15s; }
+.cell:hover .add-row, .cell:focus-within .add-row { opacity: 1; }
+.add-row button { font-size: 12px; padding: 1px 8px; }
+.stop:not(:disabled) { color: var(--error); border-color: var(--error); }
+
+.graph .edge { stroke: var(--muted); stroke-width: 1.2; }
+.graph .arrow { fill: var(--muted); }
+.graph .node { cursor: pointer; }
+.graph .node rect { fill: var(--bg); stroke: var(--border); stroke-width: 1.5; }
+.graph .node:not(.tone-none) rect { stroke: var(--tone); stroke-width: 2; }
+.graph .node.rail-dashed rect { stroke-dasharray: 6 4; }
+.graph .node text { fill: var(--fg); font: 12px ui-monospace, monospace; }
+.graph .node foreignObject { color: var(--tone); }
+.graph .dot-modified { fill: var(--modified); }
+
+@media (prefers-reduced-motion: reduce) {
+  .spin, .tone-running.rail-solid::before, .flash { animation: none; }
+}
