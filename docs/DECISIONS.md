@@ -585,3 +585,100 @@ faz):
   - prioridade de explícito e de especulativo lida em `/proc`;
   - um build promovido não é preemptado;
   - um especulativo não preempta outro especulativo.
+
+## D-019 — Linguagem visual dos estados (proposta, aguardando revisão)
+
+**Princípio:** nenhum estado é comunicado só por cor. Cada célula tem:
+- uma **faixa lateral** de 4 px, na cor do estado e, para alguns estados, com
+  um padrão (tracejada ou hachurada);
+- um **chip de estado** no cabeçalho, sempre com **ícone + texto**.
+
+Flags que não são estado (`upstream_modified`, diagnósticos, build em segundo
+plano) aparecem como **chips secundários** ao lado do chip principal. Ícones do
+`lucide-react` (MIT, tree-shaken), a única dependência de UI além do CodeMirror.
+
+```
+┃ [3] mojo   ✎ modificada — Shift+Enter executa    ⚠ 2 problemas   ⚙ build em 2º plano
+┃ def run(xs: ArrayIn[DType.float64], mut t: Float64) raises:
+┃     t += xs[i]            ← sublinhado ondulado vermelho (diagnóstico)
+┃ ─ saída ─────────────────────────────────────────────────────────────
+┃ t = 12.0
+```
+
+### Estados principais (um por célula)
+
+| Estado | Significado | Cor (claro / escuro) | Faixa | Ícone | Texto do chip |
+|---|---|---|---|---|---|
+| `idle` | nunca executou | cinza `#6e7781` / `#8b949e` | contorno vazado | `Circle` | "não executada" |
+| `queued` | no plano, entradas prontas, espera só o kernel | ardósia `#57606a` / `#8b949e` | sólida | `ListOrdered` | "na fila · 2º" |
+| `stale` | no plano, esperando ancestral; valor desatualizado | ardósia | **hachurada** | `Hourglass` | "aguardando [2]" |
+| `compiling` | build explícito de Mojo em andamento | violeta `#8250df` / `#a371f7` | sólida | `Hammer` | "compilando… 1,2 s" (cronômetro) |
+| `running` | executando no kernel | azul `#0969da` / `#58a6ff` | sólida, pulso lento | `LoaderCircle` (gira) | "executando 3,4 s" |
+| `ok` | executou sem erro | verde `#1a7f37` / `#3fb950` | sólida | `CircleCheck` | "ok" |
+| `modified` | código ≠ último executado | âmbar `#9a6700` / `#d29922` | **tracejada** | `PencilLine` | "modificada — Shift+Enter executa" |
+| `error` / `syntax-error` / `compile-error` | falhou | vermelho `#cf222e` / `#f85149` | sólida | `CircleX` / `Braces` / `Hammer` riscado | "erro" / "erro de sintaxe" / "erro de compilação" |
+| `multiple-definition` / `cycle` | erro do grafo | vermelho | sólida | `Copy` / `RefreshCw` | "`x` definido em [2] e [5]" / "ciclo com [4]" |
+| `blocked` | um ancestral não está ok | laranja `#bc4c00` / `#f0883e` | sólida | `Ban` | "bloqueada por [2]" |
+| `crashed` | o kernel morreu nela; em quarentena | magenta `#bf3989` / `#db61a2` (distinto do vermelho) | sólida, grossa (6 px) | `Zap` | "derrubou o kernel · quarentena" |
+| `interrupted` | parada pelo botão | marrom `#7d4e00` / `#bb8009` | sólida | `Square` | "interrompida por você" |
+
+**Todo `[n]` é um link** que rola até a célula `n` e a destaca por 1 s. Isso
+vale para `stale`, `blocked`, `multiple-definition`, `cycle` e a lista de
+células `unsafe_*` suspeitas no painel de `crashed`.
+
+**Painéis abaixo do código:**
+- **Erros** (`error` e similares): traceback ou mensagem do compilador.
+- **`crashed`:** a mensagem do D-013, com a lista de células a montante que
+  usam `unsafe_*`, cada uma como link.
+- **`interrupted`:** uma linha explicando que o kernel foi reiniciado.
+
+### Flags (somam-se ao estado principal)
+
+| Flag | Visual |
+|---|---|
+| `upstream_modified: [2]` | Chip âmbar **contornado** (não preenchido, para não parecer o próprio `modified`): ícone `GitBranch` + "entrada de código modificado em [2]". A área de saída ganha uma borda superior âmbar tracejada. **Os valores continuam visíveis e sem opacidade reduzida:** estão certos para o código que rodou. |
+| `compiling: true` sem estado `compiling` (build especulativo) | Chip discreto no rodapé do editor: `Cog` girando devagar + "build em 2º plano", em cinza. Não muda a faixa nem o chip principal: o estado da célula não mudou. |
+| `diagnostics` | No editor: sublinhado ondulado vermelho no intervalo (linha e coluna; sem fim conhecido, vai até o fim do token) e um marcador na calha com `CircleAlert`. No cabeçalho: chip vermelho "⚠ 2 problemas". Diagnósticos de interface e de compilação com o mesmo visual; o `source` aparece no tooltip. |
+| `stale` (valor visível e desatualizado) | Além da faixa hachurada, a saída fica com opacidade de 60%. É o único caso de saída atenuada: o valor vai ser substituído. |
+
+### Regras de diagnóstico no editor (pedido da revisão)
+
+- **Linha do cursor durante a digitação:** um diagnóstico na linha em que o
+  cursor está **não é sublinhado** enquanto o usuário digita. Ele aparece
+  quando o cursor sai da linha ou depois de **800 ms sem teclas**, o que chegar
+  primeiro. O marcador na calha e o contador do cabeçalho aparecem sempre, para
+  que o problema não fique escondido.
+- **Posições acompanham a edição:** os diagnósticos vêm do último build
+  concluído e só são substituídos quando o próximo termina (D-018). Para que o
+  sublinhado continue sobre o texto certo enquanto se edita, as decorações são
+  mapeadas pelas mudanças do documento (o `Decoration.map` do CodeMirror 6).
+
+### Nível do notebook
+
+- **Barra do topo:**
+  - estado do kernel: `ok`, `reiniciando…` (com `LoaderCircle`) ou
+    `morto` (`Skull`, vermelho);
+  - número de reinícios;
+  - **botão Parar** (`Square`), habilitado só com uma célula em `running`.
+- **Grafo:** os nós usam a mesma cor, o mesmo ícone e o mesmo texto curto dos
+  chips. Um nó `modified` tem borda tracejada; um nó com `upstream_modified`
+  tem um ponto âmbar. Clicar num nó rola até a célula.
+
+### Acessibilidade
+
+- Texto dos chips com contraste de pelo menos 4,5:1 nos dois temas; as cores
+  acima são da paleta Primer, validada para isso.
+- Uma região `aria-live="polite"` anuncia só transições para estados terminais
+  depois de uma execução pedida pelo usuário (`ok`, erros, `crashed`,
+  `interrupted`), para não tagarelar a cada mudança.
+- `prefers-reduced-motion` desliga o pulso da faixa e os giros; os ícones ficam
+  estáticos e os cronômetros continuam.
+- Todos os links `[n]` e botões são alcançáveis por teclado.
+
+### Mudança de backend necessária
+
+O backend hoje usa `stale` para qualquer célula no plano. Proposta: em
+`_dispatch`, uma célula do plano cujos ancestrais já estão resolvidos, e que só
+espera o kernel, passa a `queued`; as que esperam ancestral continuam `stale`.
+O protocolo ganha a posição na fila, para o texto "na fila · 2º". A mudança é
+pequena e vai junto com o frontend, com testes na máquina de estados.
