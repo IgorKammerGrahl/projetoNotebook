@@ -7,6 +7,9 @@ version = "0.1.0"
 
 [tasks]
 test = "python -m pytest -q"
+frontend-install = "npm --prefix frontend ci"
+frontend-build = "npm --prefix frontend run build"
+frontend-test = "npm --prefix frontend test"
 
 [dependencies]
 mojo = ">=1.1.0,<2"
@@ -14,3 +17,4 @@ python = ">=3.14.7,<3.15"
 numpy = ">=2.5.3,<3"
 pytest = ">=9.1.1,<10"
 aiohttp = ">=3.14.3,<4"
+nodejs = ">=26.10.0,<26.11"

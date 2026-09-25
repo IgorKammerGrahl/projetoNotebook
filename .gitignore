@@ -8,3 +8,5 @@ spikes/**/build/
 !.pixi/config.toml
 .pytest_cache/
 .nbcache/
+frontend/node_modules/
+frontend/dist/
