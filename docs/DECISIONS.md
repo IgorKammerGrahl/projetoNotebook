@@ -682,3 +682,39 @@ O backend hoje usa `stale` para qualquer célula no plano. Proposta: em
 espera o kernel, passa a `queued`; as que esperam ancestral continuam `stale`.
 O protocolo ganha a posição na fila, para o texto "na fila · 2º". A mudança é
 pequena e vai junto com o frontend, com testes na máquina de estados.
+
+### D-019 — ajustes da revisão (2026-09-25)
+
+**1. Glossário: três noções de "desatualizado".** Os chips usam estes textos, e
+eles precisam deixar a diferença óbvia:
+
+| Noção | Frase | Texto do chip |
+|---|---|---|
+| `stale` | A célula **vai reexecutar**, porque um ancestral dela vai rodar; o valor mostrado é o anterior e vai ser substituído. | "vai reexecutar · aguardando [2]" |
+| `upstream_modified` | O **código** de um ancestral mudou e **ainda não foi executado**; o valor mostrado está certo para o código que rodou, e nada vai reexecutar sozinho. | "código de [2] mudou sem executar" |
+| Valor antigo durante compilação (D-014) | A própria célula está **compilando uma nova versão**; o valor mostrado é o da versão anterior até o build terminar e a célula rodar. | "compilando nova versão · valor anterior" |
+
+**2. Silêncio por padrão.** `ok` e `idle` **não exibem chip nem trilho**. Chips
+só aparecem para estados que pedem atenção (`modified`, `upstream_modified`,
+erros, `blocked`, `crashed`, `interrupted`, diagnósticos) ou que indicam
+atividade (`queued`, `stale`, `compiling`, `running`, build em 2º plano). Num
+notebook saudável, a tela não tem nenhum chip. `idle` e `ok` se distinguem só
+pela presença de saída.
+
+**3. Contraste** (`frontend/contrast_check.py`, fundo `#ffffff`/`#0d1117`, chip
+`#f6f8fa`/`#161b22`):
+- todas as cores de trilho ficam entre **4,9:1 e 7,5:1**, bem acima dos 3:1
+  exigidos para componente de UI (WCAG 1.4.11);
+- o texto dos chips sobre o fundo do chip fica entre **4,6:1 e 6,9:1**, acima
+  de 4,5:1;
+- trilhos tracejados e listrados usam a cor cheia em cada marca, então cada
+  marca passa sozinha;
+- o cinza `#6e7781` dava 4,27:1 como texto de chip no tema claro; o cinza
+  "discreto" passou a ser `#57606a` (6,0:1).
+
+Os padrões foram ajustados para a largura de 4 px:
+- `stale`: **listras curtas** (3 px cor / 3 px vazio); hachura diagonal quase
+  não aparece nessa largura;
+- `modified`: **traços longos** (8 / 5).
+- Ícones: `lucide-react` com import individual por ícone. O sublinhado na linha
+  do cursor aparece após 800 ms sem teclas, independente do debounce.
