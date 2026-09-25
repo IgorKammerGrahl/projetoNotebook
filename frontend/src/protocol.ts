@@ -43,7 +43,8 @@ export type ServerMsg =
   | { type: "snapshot"; cells: CellJson[]; edges: [number, number][]; kernel: KernelState }
   | { type: "update"; cells: CellJson[]; order: number[]; edges: [number, number][]; kernel: KernelState }
   | { type: "added"; cid: number; request?: string }
-  | { type: "error"; error: string };
+  | { type: "ack"; seq: number }
+  | { type: "error"; error: string; seq?: number };
 
 export type ClientMsg =
   | { type: "edit"; cid: number; code: string }

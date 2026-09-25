@@ -126,15 +126,32 @@ class NotebookServer:
         outbox: asyncio.Queue = asyncio.Queue()
         self.clients[ws] = outbox
         writer = asyncio.create_task(self._writer(ws, outbox))
-        peer = request.remote
+        peer = f"{request.remote}/{id(ws):x}"
         log.info("client connected: %s", peer)
         try:
             outbox.put_nowait(self._snapshot())
             async for msg in ws:
                 if msg.type == WSMsgType.TEXT:
-                    m = json.loads(msg.data)
-                    log.debug("recv %s: %s", peer, {k: (v if k != "code" else f"<{len(v)} chars>") for k, v in m.items()})
-                    await self._handle(ws, m)
+                    seq = None
+                    try:
+                        m = json.loads(msg.data)
+                        if not isinstance(m, dict):
+                            raise ValueError("expected a message object")
+                        seq = m.get("seq")
+                        if seq is not None and (type(seq) is not int or seq < 1):
+                            seq = None
+                            raise ValueError("invalid sequence number")
+                        log.debug("recv %s: type=%s cid=%s seq=%s", peer, m.get("type"), m.get("cid"), seq)
+                        # Dispatch only. Session owns execution/build tasks; this reader
+                        # must stay available for stop and subsequent edits.
+                        self._handle(ws, m)
+                    except (KeyError, TypeError, ValueError) as e:
+                        outbox.put_nowait({"type": "error", "error": f"bad message: {e}", "seq": seq})
+                    except Exception:
+                        log.exception("dispatch failed: %s seq=%s", peer, seq)
+                        outbox.put_nowait({"type": "error", "error": "Falha ao processar a mensagem.", "seq": seq})
+                    if seq is not None:
+                        outbox.put_nowait({"type": "ack", "seq": seq})
         finally:
             self.clients.pop(ws, None)
             writer.cancel()
@@ -148,7 +165,8 @@ class NotebookServer:
             try:
                 await ws.send_json(msg)
             except (ConnectionError, RuntimeError):
-                return  # closing: the handler cleans up
+                await ws.close()  # a dead writer must not leave a reader with an orphaned outbox
+                return
 
     def _snapshot(self):
         s = self.session.sched
@@ -162,7 +180,7 @@ class NotebookServer:
     def _kernel_state(self):
         return {"restarts": self.session.restarts, "dead": self.session.sched.kernel_dead}
 
-    async def _handle(self, ws, m):
+    def _handle(self, ws, m):
         s = self.session
         kind = m.get("type")
         try:

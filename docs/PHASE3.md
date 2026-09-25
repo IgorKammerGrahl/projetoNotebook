@@ -149,3 +149,59 @@ passava por pouco dessa conta deixou de bastar.
 - corta a latência do Shift+Enter depois de 1 s de pausa de 1,17 s para 0,70 s;
 - esse CPU é o primeiro a ceder: a preempção (D-018) garante que ele nunca atrasa
   uma execução explícita além do build dela.
+
+## Bug do "parar"/edição sem efeito (revisão do frontend, item 1)
+
+### Previsão (escrita ANTES dos testes)
+
+- **(a) O loop de leitura espera operações longas: previsão, NÃO é a causa.**
+  Em `kernel/web.py`, o único `await` do loop de leitura é `_handle`, e
+  `_handle` não tem nenhum `await`: só chama métodos síncronos da `Session`, que
+  enfileiram ações e retornam. A execução e o build rodam no worker e em tasks.
+  O teste na mesma conexão deve passar sem mudança de código.
+- **(b) Fila offline com o socket aberto: previsão, NÃO é a causa.** A
+  instrumentação no navegador registrou o `{"type":"stop"}` passando por
+  `WebSocket.prototype.send` com `readyState` 1. Ou seja, ele foi escrito num
+  socket aberto e não passou pela fila. Além disso, `send` decide pelo
+  `readyState` do socket, não pela flag `connected` da UI.
+- **Previsão de causa:** nenhuma das duas. A hipótese mais provável é um
+  **socket zumbi**: o cliente escreve num socket que ele acha aberto, mas cujo
+  handler no servidor já terminou, ou que não é o socket atual. Evidência a
+  favor: `ss` mostrou 3 conexões do Chrome na porta 8765 com uma aba só. Se os
+  testes de (a) e (b) passarem, o próximo passo é instrumentar a identidade da
+  conexão nos dois lados.
+
+### Retomada no Codex: previsão antes dos novos testes
+
+As hipóteses (a) e (b) continuam improváveis no código atual. Os logs preservados
+não mostram o recebimento do `stop` da falha original; não permitem atribuir uma
+causa ao incidente. Três conexões TCP, por si só, também não provam socket zumbi.
+A extração incompleta de `Connection` tem dois problemas verificáveis: espera
+ACK que o servidor não implementou e aceita eventos tardios depois de `close()`.
+Previsão: testes de envio com socket aberto passam; o teste de abertura tardia
+após desmontagem falha e demonstra uma falha de ciclo de vida, sem provar que
+ela causou o incidente observado anteriormente.
+
+### Resultado do item 1 (retomada)
+
+- **(a) refutada nos testes atuais:** loop infinito e `stop` na mesma conexão;
+  edição/execução Python enquanto compila Mojo real; edição durante um build
+  especulativo promovido mantido por uma barreira até a resposta Python chegar.
+  O dispatcher agora é explicitamente síncrono; execução/build continuam em tasks.
+- **(b) refutada:** envio depende de OPEN, funciona antes do snapshot e depois de
+  reconectar, independentemente da flag visual. Teste de transição incluído.
+- **Causa original não determinada.** O log antigo também mostra `stop` tratado
+  normalmente na tentativa de reprodução. Não há evidência para declarar que
+  ACK/resend consertou aquele incidente.
+- **Defeito reproduzido e corrigido na extração incompleta:** eventos tardios de
+  uma conexão descartada ainda enviavam comandos e alteravam estado. O teste
+  falhou antes da correção e passou após invalidar o socket no descarte/reconexão.
+- ACK agora confirma despacho imediatamente, sem esperar execução; após 3 s sem
+  confirmação o cliente reconecta mesmo sem receber `close`, ignora eventos do
+  socket antigo e mostra aviso. Mensagens já escritas **não são repetidas**:
+  uma confirmação perdida não distingue comando executado de comando perdido.
+  Apenas mensagens ainda não escritas permanecem na fila offline.
+- Falha no writer fecha a conexão; JSON inválido ou exceção no despacho retorna
+  erro sem matar o leitor. Logs identificam conexão e sequência sem imprimir fonte.
+- Validação: **17 testes WebSocket/backend, 18 testes frontend; build aprovado**.
+  O Vite mantém o aviso preexistente de bundle >500 kB.

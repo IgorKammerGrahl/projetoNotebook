@@ -208,3 +208,115 @@ async def test_delete_always_broadcasts_the_new_order(srv, http, path):
     m = await recv_until(ws, lambda m: m["type"] == "update" and md not in m["order"])
     assert len(m["order"]) == 2
     await ws.close()
+
+
+# ---------------- review item 1(a): one connection must never block on long work ----------------
+
+async def cell_status(ws, cid, want, timeout=30):
+    return await recv_until(ws, lambda m: any(c["id"] == cid and c["status"] == want for c in m.get("cells", [])),
+                            timeout=timeout)
+
+
+@with_server
+async def test_stop_on_the_same_connection_that_started_the_loop(srv, http, path):
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws.receive_json()
+    await ws.send_json({"type": "add", "code": "import time as _t\nwhile True:\n    _t.sleep(0.01)"})
+    cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
+    await ws.send_json({"type": "run", "cid": cid})
+    await cell_status(ws, cid, "running")
+    await asyncio.sleep(0.3)
+    await ws.send_json({"type": "stop"})          # same connection, while the loop runs
+    await cell_status(ws, cid, "interrupted", timeout=10)
+    await ws.close()
+
+
+@with_server
+async def test_edit_and_run_on_the_same_connection_during_a_long_build(srv, http, path):
+    import shutil, uuid
+    if not shutil.which("mojo"):
+        pytest.skip("mojo not on PATH")
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    snap = await ws.receive_json()
+    a = snap["cells"][1]["id"]                    # "a = 20"
+    await ws.send_json({"type": "add", "kind": "mojo",
+                        "code": f"# nonce {uuid.uuid4().hex}\ndef run(a: Int, mut m: Int) raises:\n    m = a"})
+    m = (await recv_until(ws, lambda x: x["type"] == "added"))["cid"]
+    await ws.send_json({"type": "run", "cid": m})
+    await cell_status(ws, m, "compiling")
+    t0 = asyncio.get_running_loop().time()
+    await ws.send_json({"type": "edit", "cid": a, "code": "a = 7"})   # same connection, mid-build
+    await ws.send_json({"type": "run", "cid": a})
+    msg = await cell_status(ws, a, "ok", timeout=10)
+    python_done = asyncio.get_running_loop().time() - t0
+    assert next(c for c in msg["cells"] if c["id"] == a)["previews"]["a"]["repr"] == "7"
+    assert srv.session.sched.cells[m].status in ("compiling", "stale", "queued"), "the build should still be going"
+    assert python_done < 1.0, python_done
+    await cell_status(ws, m, "ok", timeout=60)
+    await ws.close()
+
+
+@with_server
+async def test_dispatch_ack_does_not_wait_for_execution_and_bad_messages_do_not_kill_reader(srv, http, path):
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws.receive_json()
+    await ws.send_str("{broken")
+    assert (await ws.receive_json())["type"] == "error"
+    await ws.send_json([])
+    assert (await ws.receive_json())["type"] == "error"
+    await ws.send_json({"type": "add", "code": "while True: pass", "seq": 1})
+    cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
+    await recv_until(ws, lambda m: m == {"type": "ack", "seq": 1})
+    await ws.send_json({"type": "run", "cid": cid, "seq": 2})
+    await recv_until(ws, lambda m: m == {"type": "ack", "seq": 2}, timeout=3)
+    assert srv.session.sched.cells[cid].status == "running"
+    await ws.send_json({"type": "stop", "seq": 3})
+    await cell_status(ws, cid, "interrupted", timeout=10)
+    await ws.close()
+
+
+@with_server
+async def test_edit_on_same_connection_while_promoted_build_is_held(srv, http, path):
+    from unittest.mock import patch
+
+    started, release = asyncio.Event(), asyncio.Event()
+    original = srv.session._build
+
+    async def held_build(*args):
+        started.set()
+        await release.wait()
+        await original(*args)
+
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    snap = await ws.receive_json()
+    a = snap["cells"][1]["id"]
+    srv.session.speculate_debounce = 0.01
+    with patch.object(srv.session, "_build", held_build):
+        await ws.send_json({"type": "add", "kind": "mojo", "code": ""})
+        cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
+        await ws.send_json({"type": "edit", "cid": cid, "code": "def run(mut out: Int):\n    out = 42"})
+        await asyncio.wait_for(started.wait(), 3)
+        await ws.send_json({"type": "run", "cid": cid})
+        await cell_status(ws, cid, "compiling")
+        await ws.send_json({"type": "edit", "cid": a, "code": "a = 9"})
+        await ws.send_json({"type": "run", "cid": a})
+        result = await cell_status(ws, a, "ok", timeout=3)
+        assert next(c for c in result["cells"] if c["id"] == a)["previews"]["a"]["repr"] == "9"
+        assert not release.is_set()
+        assert any(event == "build-promoted" for _, event, _ in srv.session.log)
+        release.set()
+        await cell_status(ws, cid, "ok")
+    await ws.close()
+
+
+def test_writer_failure_closes_the_connection():
+    from unittest.mock import AsyncMock
+
+    async def main():
+        ws = AsyncMock()
+        ws.send_json.side_effect = ConnectionError("peer gone")
+        outbox = asyncio.Queue()
+        outbox.put_nowait({"type": "ack", "seq": 1})
+        await NotebookServer._writer(ws, outbox)
+        ws.close.assert_awaited_once()
+    asyncio.run(main())

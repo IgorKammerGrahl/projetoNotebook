@@ -23,7 +23,7 @@ export function App() {
       }
     }
   };
-  const { state, send } = useNotebook(onMessage);
+  const { state, send, notice, clearNotice } = useNotebook(onMessage);
   const { cells, order, edges, kernel, connected } = state;
 
   // elapsed time of running / compiling cells, ticking every 100 ms
@@ -63,6 +63,7 @@ export function App() {
           <Network size={15} aria-hidden="true" /> grafo
         </button>
       </header>
+      {notice && <div role="status" className="connection-notice">{notice} <button onClick={clearNotice}>fechar aviso</button></div>}
       <div className="body">
         <main className="cells">
           {order.length === 0 && connected && (
