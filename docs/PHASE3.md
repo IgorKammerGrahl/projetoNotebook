@@ -106,3 +106,46 @@ custo é matar e recomeçar builds com mais frequência enquanto o usuário digi
 - Testes: 4 puros, 4 pela `Session` com `mojo` real (debounce, erro como
   diagnóstico, edição que mata o build, run que reusa o build em andamento) e 1
   pelo WebSocket.
+
+## Custo dos builds especulativos numa sessão de digitação (revisão, item 2)
+
+**Traço** (`tests/bench_typing.py`, semente 42, o mesmo para os dois debounces):
+317 teclas em 60,6 s. São rajadas de 3–15 teclas com 80–200 ms entre elas,
+separadas por pausas log-uniformes de 100 ms a 2 s. Há 22 intervalos acima de
+300 ms e 11 acima de 800 ms. Toda tecla é uma edição com fonte novo e válido.
+Isso é o pior caso: digitando de verdade, estados intermediários quebram a
+gramática de `run`, e aí nem há build.
+
+### Previsão (escrita ANTES de medir, pelo modelo do script)
+
+O modelo: um build começa a cada intervalo maior que o debounce e morre se a
+próxima tecla chegar antes de ele terminar (~1,4 s).
+
+| Debounce | Builds iniciados | Mortos | Completos | Tempo de build jogado fora |
+|---|---|---|---|---|
+| 300 ms | 22 | 20 | 2 | ~10,4 s |
+| 800 ms | 11 | 10 | 1 | ~5,0 s |
+
+Com pausas de até 2 s, quase nenhum build especulativo sobrevive até a próxima
+tecla. O debounce de 300 ms dobra o trabalho jogado fora (≈17% de um núcleo,
+contra ≈8%), em troca do ganho de latência medido antes (1 s de pausa: 0,70 s
+contra 1,17 s). Esse CPU roda com `nice 10`.
+
+### Medido (servidor real, `mojo` real, mesmo traço)
+
+| Debounce | Iniciados | Mortos | Completos | Build jogado fora | Previsto |
+|---|---|---|---|---|---|
+| 300 ms | 22 | **21** | 1 | **12,3 s** | 22 / 20 / 2 / 10,4 s |
+| 800 ms | 11 | 10 | 1 | 5,1 s | 11 / 10 / 1 / 5,0 s |
+
+O modelo acertou os 800 ms exatamente. Nos 300 ms, ficou um build a mais morto e
+1,9 s a mais jogado fora. A explicação provável é o `nice 10`: com prioridade
+menor, o build especulativo leva mais que os 1,4 s do modelo, e um intervalo que
+passava por pouco dessa conta deixou de bastar.
+
+**Balanço dos 300 ms (aprovado na revisão):**
+- custa ≈20% de um núcleo em prioridade baixa durante a digitação contínua
+  (12,3 s em 62 s), contra ≈8% com 800 ms;
+- corta a latência do Shift+Enter depois de 1 s de pausa de 1,17 s para 0,70 s;
+- esse CPU é o primeiro a ceder: a preempção (D-018) garante que ele nunca atrasa
+  uma execução explícita além do build dela.
