@@ -262,3 +262,36 @@ Implementação concluída após o commit separado do item 1 (`e5f1753`).
 - A causa do incidente original de “parar”/edição sem efeito continua não
   determinada, conforme o relatório do item 1. Os testes na mesma conexão e a
   regressão de ciclo de vida corrigida não provam retrospectivamente essa causa.
+
+## Após a v0.1.0 — preservar Markdown ao salvar e reabrir
+
+**DEBT-006 paga.** O formato antigo não representava limites entre células
+Markdown consecutivas, descartava células vazias e podia transformar exemplos
+cercados de Python/Mojo/HTML em células executáveis na reabertura.
+
+- O writer mantém a representação antiga quando ela reproduz exatamente as
+  células. Nos demais casos, usa o cabeçalho `<!-- notebook-format: 1 -->` e
+  blocos Markdown explícitos, com delimitadores que não colidem com o conteúdo.
+  O payload é opaco e preserva linhas em branco; não há ids persistidos.
+- O leitor aceita os notebooks antigos. Blocos explícitos malformados são
+  recusados antes do carregamento. A extensão exige o leitor posterior à v0.1.0;
+  compatibilidade e gramática estão registradas em D-007.
+- Regressões cobrem adjacência, vazios no início/meio/fim, espaços nas bordas,
+  CRLF, exemplos de código, cercas abertas e comentários semelhantes aos
+  delimitadores. Antes da correção, a seleção de novos testes Markdown teve
+  **14 falhas e 1 aprovação**.
+- A integração WebSocket verifica o arquivo gravado **antes** de encerrar o
+  servidor, pois `close()` também salva. Outra instância lê o arquivo e devolve
+  as mesmas células, sem executar os exemplos Markdown.
+- O novo teste Playwright usa Chromium e a interface real: cria quatro células
+  Markdown consecutivas (duas vazias), edita uma existente, verifica o autosave
+  no disco e inicia **outro processo** do servidor. Compara tipo, fonte e ordem,
+  incluindo Python/Mojo/HTML e linhas em branco nas bordas. Também confirma o
+  HTML visível no iframe. O arquivo fica em diretório temporário, removido ao
+  final; falhas deixam trace, imagem e logs em `frontend/test-results/`.
+
+**Validação:** 195 testes backend, 33 testes frontend e 1 teste Chromium
+aprovados; build TypeScript + Vite aprovado. Permanece o aviso preexistente de
+bundle maior que 500 kB. A captura da reabertura foi inspecionada. Comandos de
+instalação do navegador e execução estão no README (`frontend-e2e-install` e
+`frontend-e2e`).

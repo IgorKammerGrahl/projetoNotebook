@@ -1,0 +1,151 @@
+import { test, expect } from "@playwright/test";
+import { spawn, execFileSync } from "node:child_process";
+import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("../../", import.meta.url));
+const original = [
+  { kind: "python", code: "number = 7" },
+  { kind: "mojo", code: "def run(number: Int, mut doubled: Int):\n    doubled = number * 2" },
+  { kind: "html", code: "<p>HTML preservado</p>" },
+];
+
+function startServer(path) {
+  const child = spawn("python", ["-m", "kernel", "serve", path, "--port", "0"], {
+    cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"],
+  });
+  let log = "";
+  const exited = new Promise((resolve) => child.once("close", resolve));
+  const url = new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`Server did not start:\n${log}`)), 15_000);
+    child.once("error", (error) => { clearTimeout(timer); reject(error); });
+    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Server exited (${code}):\n${log}`)); });
+    child.stderr.on("data", (chunk) => { log += chunk; });
+    child.stdout.on("data", (chunk) => {
+      log += chunk;
+      const match = log.match(/notebook: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/);
+      if (match) { clearTimeout(timer); resolve(match[1]); }
+    });
+  });
+  return {
+    url,
+    log: () => log,
+    async stop() {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      child.kill("SIGINT");
+      const timer = setTimeout(() => {
+        try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
+      }, 5000);
+      try { await exited; } finally { clearTimeout(timer); }
+    },
+  };
+}
+
+function readSavedCells(path) {
+  // Use the production reader, and compare against independently specified cells.
+  const json = execFileSync("python", ["-c",
+    "import json, sys; from pathlib import Path; from dataclasses import asdict; from kernel.fmt import parse; print(json.dumps([asdict(c) for c in parse(Path(sys.argv[1]).read_text())]))",
+    path], { cwd: root, encoding: "utf8" });
+  return JSON.parse(json);
+}
+
+const regions = (page) => page.getByRole("region", { name: /^célula \d+, / });
+
+async function replaceMarkdown(page, editor, code) {
+  await editor.click();
+  await editor.press("ControlOrMeta+A");
+  await editor.press("Backspace");
+  const lines = code.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    if (i) await editor.press("Enter");
+    if (lines[i]) await page.keyboard.insertText(lines[i]);
+  }
+  await expect.poll(() => editor.locator(".cm-line").allTextContents()).toEqual(lines);
+}
+
+async function sourcesInUI(page) {
+  const result = [];
+  for (const region of await regions(page).all()) {
+    const label = await region.getAttribute("aria-label");
+    const [, kind] = label.split(", ");
+    if (kind === "html") {
+      const frame = region.getByTitle(/^html da célula /);
+      await expect(frame).toBeVisible();
+      result.push({ kind, code: await frame.getAttribute("srcdoc") });
+      continue;
+    }
+    const editor = region.getByLabel(/^código da célula /);
+    if (!await editor.count()) await region.locator(".rendered").dblclick();
+    await expect(editor).toBeVisible();
+    const code = (await editor.locator(".cm-line").allTextContents()).join("\n");
+    result.push({ kind, code });
+    if (kind === "markdown") await editor.press("Shift+Enter");
+  }
+  return result;
+}
+
+test("autosave preserves adjacent and empty Markdown across a server restart", async ({ page }, testInfo) => {
+  const directory = await mkdtemp(join(tmpdir(), "notebook-e2e-"));
+  const path = join(directory, "roundtrip.nb.md");
+  const servers = [];
+  const browserErrors = [];
+  page.on("pageerror", (error) => browserErrors.push(error.message));
+  try {
+    // Begin with an unversioned notebook to exercise backwards compatibility.
+    await writeFile(path, original.map((c) => `\`\`\`${c.kind}\n${c.code}\n\`\`\``).join("\n\n") + "\n");
+    const first = startServer(path);
+    servers.push(first);
+    await page.goto(await first.url);
+    await expect(regions(page)).toHaveCount(original.length);
+
+    const markdown = [
+      "# Primeira\n\nTexto com **ênfase**.",
+      "\nExemplo de código:\n```python\nraise RuntimeError('este exemplo não pode executar')\n```\n\n<!-- notebook:markdown === -->\n<!-- === -->\n",
+      "", "",
+    ];
+    for (let i = 0; i < markdown.length; i++) {
+      await regions(page).nth(i).getByRole("button", { name: "+ markdown", exact: true }).click();
+      await expect(regions(page)).toHaveCount(original.length + i + 1);
+      const editor = regions(page).nth(i + 1).getByLabel(/^código da célula /);
+      await expect(editor).toBeVisible();
+      if (markdown[i]) await replaceMarkdown(page, editor, markdown[i]);
+      await editor.press("Shift+Enter");
+    }
+
+    // Reopen and change an existing Markdown cell through the actual UI.
+    await regions(page).nth(1).locator(".rendered").dblclick();
+    markdown[0] = "# Primeira editada\n\nTexto final salvo.";
+    const editor = regions(page).nth(1).getByLabel(/^código da célula /);
+    await replaceMarkdown(page, editor, markdown[0]);
+    await editor.press("Shift+Enter");
+    const expected = [original[0], ...markdown.map((code) => ({ kind: "markdown", code })), ...original.slice(1)];
+    await expect(page.getByRole("button", { name: "rodar tudo", exact: true })).toBeEnabled();
+    expect(await sourcesInUI(page)).toEqual(expected);
+
+    // This check must precede stop(): shutdown flushes pending saves itself.
+    await expect.poll(() => readSavedCells(path), { timeout: 10_000 }).toEqual(expected);
+    const autosaved = await readFile(path, "utf8");
+    await page.goto("about:blank"); // prevent the old token from reconnecting during restart
+    await first.stop();
+    expect(await readFile(path, "utf8")).toBe(autosaved);
+
+    const second = startServer(path);
+    servers.push(second);
+    await page.goto(await second.url);
+    await expect(regions(page)).toHaveCount(expected.length);
+    expect(await sourcesInUI(page)).toEqual(expected);
+    await expect(regions(page).last().frameLocator("iframe").getByText("HTML preservado", { exact: true })).toBeVisible();
+    await expect(regions(page).filter({ has: page.getByText("derrubou o kernel", { exact: false }) })).toHaveCount(0);
+    expect(browserErrors).toEqual([]);
+    await page.screenshot({ path: testInfo.outputPath("reopened.png"), fullPage: true });
+  } finally {
+    await page.goto("about:blank").catch(() => {});
+    for (const server of servers) await server.stop();
+    if (testInfo.status !== testInfo.expectedStatus) {
+      await testInfo.attach("server-log", { body: servers.map((s) => s.log()).join("\n--- restart ---\n"), contentType: "text/plain" });
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});

@@ -97,9 +97,10 @@ def test_debt_005_global_assignment_inside_function_is_not_a_definition():
     assert e2.cells[1].status == "error"        # no edge -> runs before f() and fails
 
 
-def test_debt_006_adjacent_markdown_cells_merge_on_save():
+def test_debt_006_paid_adjacent_and_empty_markdown_cells_survive_save():
     cells = [Cell("markdown", "a"), Cell("markdown", "b")]
-    assert parse(serialize(cells)) == [Cell("markdown", "a\n\nb")]
+    cells += [Cell("markdown", ""), Cell("markdown", "")]
+    assert parse(serialize(cells)) == cells
 
 
 def test_debt_007_thread_print_after_cell_escapes_capture(capsys):

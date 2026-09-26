@@ -42,7 +42,20 @@ pixi run npm --prefix frontend run dev
 ```bash
 pixi run test            # backend (pytest)
 pixi run frontend-test   # lógica do frontend (vitest)
+pixi run frontend-e2e-install # instala o Chromium do Playwright (primeiro uso)
+pixi run frontend-e2e     # build + teste no navegador, sem janela
 ```
+
+O teste no navegador cria um notebook temporário, edita Markdown, confere o
+autosave e reabre o arquivo em outro processo do servidor. Verifica conteúdo,
+tipo e ordem das células, incluindo Markdown consecutivo e vazio. Em caso de
+falha, captura imagem, trace e logs em `frontend/test-results/`.
+
+O formato de gravação preserva células Markdown consecutivas, vazias e com
+exemplos de código. Quando necessário, inclui o cabeçalho
+`<!-- notebook-format: 1 -->` e delimitadores de célula; esses arquivos exigem o
+leitor atual, posterior à v0.1.0. Notebooks antigos continuam sendo aceitos.
+Detalhes em [D-007](docs/DECISIONS.md#d-007--formato-do-arquivo-do-notebook-markdown-com-blocos-cercados-2026-09-23).
 
 **Sem navegador:** `pixi run python -m kernel run arquivo.nb.md` roda tudo uma vez
 e imprime o estado de cada célula.

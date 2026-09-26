@@ -115,12 +115,43 @@ células Python, Mojo, Markdown e HTML.
   o writer escolhe uma cerca maior que a maior sequência de crases do conteúdo.
 - Cercas com outra info string (ex.: ```` ```bash ````) fazem parte da célula
   Markdown ao redor, e o que está dentro delas nunca abre célula.
-- O texto entre duas células de código é **uma** célula Markdown, sem linhas em
-  branco nas bordas. Por isso, duas células Markdown adjacentes se fundem ao
-  salvar (DEBT-006).
+- Nos arquivos sem cabeçalho de versão, o texto entre duas células de código é
+  **uma** célula Markdown, sem linhas em branco nas bordas. Essa leitura continua
+  compatível com os notebooks antigos.
 - Não há ids de célula no arquivo; a identidade das células existe só na memória
-  do kernel. Isso mantém o diff limpo, mas identificar uma célula entre versões do
-  arquivo fica para quando existir `watch` ou frontend.
+  do kernel. O arquivo preserva ordem, tipo e fonte; ids não sobrevivem à reabertura.
+
+**Extensão após a v0.1.0 (DEBT-006):** o writer usa o formato antigo quando sua
+releitura reproduz exatamente as células. Caso contrário, escreve na primeira
+linha `<!-- notebook-format: 1 -->` e delimita **todas** as células Markdown com
+comentários HTML. Células de código continuam usando as cercas acima. Exemplo
+com duas células Markdown, sendo a segunda vazia:
+
+```markdown
+<!-- notebook-format: 1 -->
+
+<!-- notebook:markdown === -->
+Primeira célula.
+<!-- === -->
+
+<!-- notebook:markdown === -->
+
+<!-- === -->
+```
+
+- O delimitador usa pelo menos três `=`, e mais que a maior sequência de `=` no
+  conteúdo daquela célula. O fechamento exige a mesma sequência, na coluna 0.
+  Assim, comentários parecidos dentro da fonte não fecham o bloco acidentalmente.
+- O conteúdo do bloco é opaco: até cercas `python`, `mojo` e `html` continuam
+  sendo exemplos Markdown. Linhas em branco nas bordas e células vazias são
+  preservadas; CRLF é normalizado para LF.
+- Esses marcadores só têm significado com o cabeçalho na primeira linha.
+  Comentários iguais em arquivos antigos continuam sendo texto Markdown.
+  Abertura inválida ou bloco explícito sem fechamento causa erro de leitura
+  antes de qualquer célula ser carregada.
+- O leitor da **v0.1.0 não suporta essa extensão**: arquivos com esse cabeçalho
+  devem ser abertos na versão atual. Reabrir com o leitor antigo pode fundir
+  células e interpretar exemplos cercados como código executável.
 
 ## D-008 — Regras do grafo Python (2026-09-23)
 
