@@ -508,7 +508,7 @@ terceiro.
   mesmo assim sem `allow-same-origin`.
 - **Protocolo WebSocket (JSON):**
   - cliente → servidor: `edit {cid, code, base_version, request}`, `add {after, kind}`,
-    `delete {cid}`, `run {cid}`, `run_all`, `stop`; o frontend inclui `seq` para
+    `delete {cid}`, `run {cid}`, `run_all`, `stop`, `retry_save`; o frontend inclui `seq` para
     confirmar o despacho sem esperar o término da execução;
   - servidor → cliente: `snapshot` na conexão (células, estados, previews e
     arestas), depois `update {cells, order, edges, kernel}`, `ack {seq}` e
@@ -516,7 +516,8 @@ terceiro.
     `edit_id` da última edição aceita. A versão muda em cada edição e entre
     instâncias do servidor; não depende apenas do conteúdo. Base ausente ou
     diferente da atual é recusada antes de modificar o notebook;
-  - o servidor grava o arquivo com debounce de 1 s depois de cada mudança.
+  - o servidor grava o arquivo com debounce de 1 s depois de cada mudança;
+    o estado de persistência e as falhas seguem D-020.
 
 ## D-016 — Segurança local mínima (proposta — precisa de decisão sua)
 
@@ -813,3 +814,48 @@ edição digitada) saiu do navegador com o socket `OPEN` e não teve efeito no
 servidor. A mesma sequência, repetida no navegador, numa `Session` e num
 `NotebookServer` com cliente WebSocket, funcionou. `serve --verbose` agora
 registra cada mensagem recebida, para pegar o caso se voltar.
+
+## D-020 — Confirmação de salvamento e recuperação de falhas de escrita (2026-09-26)
+
+**Contexto:** o ACK confirma despacho. Antes deste bloco, o autosave escrevia
+sincronamente no event loop; uma falha descartava o agendamento e só aparecia
+no log. A interface não sabia se a fonte aceita havia chegado ao arquivo.
+
+**Escolha:** acompanhar uma revisão do documento e a última revisão gravada,
+separadas das versões individuais das células. A revisão avança em mudanças de
+fonte, inclusão, exclusão ou ordem; resultados de execução não a alteram.
+
+- `snapshot` e `update` incluem `save {status, revision, saved_revision, error}`;
+  transições de gravação também geram `save_status {save}` pela mesma fila
+  ordenada do WebSocket. `status` é `saving`, `saved` ou `error`.
+- Uma única task de gravação copia as células no event loop e serializa/escreve
+  essa cópia numa thread. Edições durante a gravação formam a próxima cópia;
+  terminar uma revisão antiga mantém `saving` se houver revisão mais recente.
+  O leitor WebSocket continua disponível para editar, executar e parar.
+- O arquivo temporário tem nome exclusivo, fica no mesmo diretório e preserva
+  os bits de permissão do arquivo existente. A gravação faz flush, `fsync` do
+  arquivo, substituição atômica e `fsync` do diretório antes de confirmar sucesso.
+  Falhas antes da substituição preservam o arquivo anterior. Se o último
+  `fsync` falhar, o novo conteúdo pode estar visível, mas permanece sem confirmação.
+- Erros de permissão e disco cheio têm mensagem específica; outros erros têm
+  mensagem geral e detalhe no log. A fonte aceita permanece na `Session`, com
+  revisão pendente. `retry_save` repete a gravação da fonte atual, sem executar
+  células. Outra edição também agenda nova tentativa. Não há repetição infinita
+  em segundo plano após uma falha.
+- O frontend só mostra “salvo” conectado, com confirmação para a revisão atual,
+  sem mensagens de alteração aguardando ACK e sem rascunhos/conflitos pendentes.
+  Reconectar exige novo snapshot; ACK sozinho nunca confirma persistência.
+  A falha aparece no topo, com explicação e botão de nova tentativa.
+- No encerramento, novas ações são recusadas, uma gravação em curso é aguardada
+  e revisões ainda pendentes recebem uma tentativa final. Falha definitiva é
+  propagada após fechar sockets, processo do kernel e servidor HTTP, para que a
+  CLI não termine como se tivesse salvo normalmente.
+
+**Limites:** recuperação automática após queda do servidor/navegador e rascunhos
+persistidos no cliente ficam para outro bloco. Alterações ainda não gravadas
+existem apenas em memória. O controle de revisão cobre clientes do mesmo
+servidor; modificações externas do arquivo e múltiplos servidores no mesmo
+arquivo não são coordenados.
+
+**Verificação:** `tests/test_persistence.py`, `frontend/src/saving.test.ts`,
+`frontend/src/connection.test.ts` e `frontend/e2e/save-reopen.spec.js`.

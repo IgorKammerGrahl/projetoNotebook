@@ -22,6 +22,16 @@ pixi run python -m kernel serve /tmp/demo.nb.md
 Abra a URL impressa (`http://127.0.0.1:8765/?token=...`). O token é obrigatório
 (D-016). A demonstração explica, na primeira célula, como provocar cada estado.
 
+O topo mostra o estado de salvamento. **“Salvo”** confirma que as alterações
+aceitas foram gravadas; “alterações pendentes” também considera rascunhos,
+conflitos e mensagens ainda sem confirmação. Durante uma desconexão, a
+interface aguarda reconectar para confirmar o estado do arquivo.
+
+Se aparecer **“falha ao salvar”**, corrija a permissão ou libere espaço e use
+**“tentar salvar novamente”**. As alterações aceitas permanecem na memória do
+servidor; rascunhos locais permanecem na aba. Mantenha ambos abertos até aparecer
+“salvo”: recuperação de rascunhos após encerramento forçado ainda não existe.
+
 Opções úteis de `serve`:
 - `--port`;
 - `--verbose`: registra conexões e mensagens recebidas;
@@ -46,10 +56,12 @@ pixi run frontend-e2e-install # instala o Chromium do Playwright (primeiro uso)
 pixi run frontend-e2e     # build + teste no navegador, sem janela
 ```
 
-O teste no navegador cria um notebook temporário, edita Markdown, confere o
+Os testes no navegador criam notebooks temporários. Um edita Markdown, confere o
 autosave e reabre o arquivo em outro processo do servidor. Verifica conteúdo,
-tipo e ordem das células, incluindo Markdown consecutivo e vazio. Em caso de
-falha, captura imagem, trace e logs em `frontend/test-results/`.
+tipo e ordem das células, incluindo Markdown consecutivo e vazio. Outro provoca
+uma falha real de permissão de escrita, reconecta e salva a mesma edição usando
+a nova tentativa. Em caso de falha, capturam imagem, trace e logs em
+`frontend/test-results/`.
 
 O formato de gravação preserva células Markdown consecutivas, vazias e com
 exemplos de código. Quando necessário, inclui o cabeçalho

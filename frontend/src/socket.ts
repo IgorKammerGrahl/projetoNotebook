@@ -7,12 +7,15 @@ import { empty, reduce, type NotebookState } from "./store";
 type Action = ServerMsg | { type: "status"; connected: boolean };
 
 function reducer(state: NotebookState, a: Action): NotebookState {
-  return a.type === "status" ? { ...state, connected: a.connected } : reduce(state, a);
+  return a.type === "status"
+    ? { ...state, connected: a.connected, save: a.connected ? state.save : null }
+    : reduce(state, a);
 }
 
 export function useNotebook(onMessage?: (m: ServerMsg) => void) {
   const [state, dispatch] = useReducer(reducer, empty);
   const [notice, setNotice] = useState("");
+  const [pendingChanges, setPendingChanges] = useState(false);
   const conn = useRef<Connection | null>(null);
   const handler = useRef(onMessage);
   handler.current = onMessage;
@@ -24,6 +27,7 @@ export function useNotebook(onMessage?: (m: ServerMsg) => void) {
       onMessage: (m) => { dispatch(m); handler.current?.(m); },
       onStatus: (connected) => dispatch({ type: "status", connected }),
       onNotice: setNotice,
+      onPendingChanges: setPendingChanges,
     });
     conn.current = c;
     return () => c.close();
@@ -31,5 +35,5 @@ export function useNotebook(onMessage?: (m: ServerMsg) => void) {
 
   const send = useCallback((m: ClientMsg, queuedAt?: number) => conn.current?.send(m, queuedAt), []);
   const discardEdits = useCallback((cid: number) => conn.current?.discardEdits(cid), []);
-  return { state, send, discardEdits, notice, setNotice, clearNotice: () => setNotice("") };
+  return { state, send, discardEdits, pendingChanges, notice, setNotice, clearNotice: () => setNotice("") };
 }

@@ -295,3 +295,42 @@ aprovados; build TypeScript + Vite aprovado. Permanece o aviso preexistente de
 bundle maior que 500 kB. A captura da reabertura foi inspecionada. Comandos de
 instalação do navegador e execução estão no README (`frontend-e2e-install` e
 `frontend-e2e`).
+
+## Após a v0.1.0 — salvamento visível e falhas de escrita
+
+O bloco anterior foi consolidado no commit `96d8ce2`. Este bloco implementa D-020.
+
+**Lacunas corrigidas:** `_save` descartava o agendamento antes de escrever e
+executava I/O no event loop. Uma exceção aparecia apenas no log, sem estado de
+falha no frontend e sem tentativa final no encerramento após esse erro.
+
+- A interface mostra “salvando…”, “salvo” ou “falha ao salvar”. Pendências locais
+  e desconexão têm mensagens próprias; receber ACK não basta para mostrar “salvo”.
+  Falhas incluem explicação e “tentar salvar novamente”, e sobrevivem à reconexão.
+- Uma única task grava cópias imutáveis fora do event loop. A revisão confirmada
+  corresponde à cópia efetivamente gravada; uma edição recebida durante a escrita
+  continua pendente e entra na próxima cópia. Arquivo e diretório são sincronizados
+  antes da confirmação, com substituição atômica e limpeza do temporário.
+- Falhas de escrita preservam a fonte aceita em memória. Uma tentativa explícita
+  ou uma nova edição pode salvar novamente. Durante o encerramento, ações novas
+  são recusadas, a escrita em curso é aguardada e falhas definitivas são propagadas
+  após a limpeza dos sockets, processo do kernel e servidor HTTP.
+
+**Verificação:**
+- 208 casos backend aprovados: suíte completa com 206, mais os dois casos
+  acrescentados na revisão final (exclusão da última célula e edição durante uma
+  escrita que depois falha). Treze casos de persistência atravessam o servidor
+  real, incluindo falta de permissão, disco cheio, substituição e sincronização
+  do diretório, reconexão, novas tentativas, encerramento e “parar” na mesma
+  conexão enquanto a escrita está bloqueada por uma barreira de teste.
+- 43 testes frontend aprovados, incluindo confirmação de revisão, rascunhos e
+  alterações sem ACK, desconexão e manutenção do erro até a gravação bem-sucedida.
+- 2 testes Chromium aprovados: salvar/reabrir e falha real de permissão no
+  diretório temporário, seguida de reload e nova tentativa pela interface.
+  A captura do estado de erro foi inspecionada.
+- Build TypeScript + Vite aprovado; permanece o aviso preexistente de bundle
+  maior que 500 kB. Sem nova dependência.
+
+**Limite explícito:** este bloco recupera uma gravação falha enquanto a fonte
+permanece em memória. Rascunhos persistidos e recuperação após encerramento
+forçado do servidor/navegador ainda não estão implementados.

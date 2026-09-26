@@ -5,6 +5,7 @@ import { Cell } from "./Cell";
 import { Graph } from "./Graph";
 import { Network, Play, Skull, Square, WifiOff } from "./icons";
 import { Announcements } from "./announcements";
+import { savingStatus } from "./saving";
 
 const TIMED: Status[] = ["running", "compiling"];
 export function App() {
@@ -14,7 +15,7 @@ export function App() {
     const text = announcements.current.receive(m);
     if (text) setAnnouncement((prev) => ({ text, serial: prev.serial + 1 }));
   };
-  const { state, send, discardEdits, notice, setNotice, clearNotice } = useNotebook(onMessage);
+  const { state, send, discardEdits, pendingChanges, notice, setNotice, clearNotice } = useNotebook(onMessage);
   const { cells, order, edges, kernel, connected } = state;
 
   // elapsed time of running / compiling cells, ticking every 100 ms
@@ -43,11 +44,14 @@ export function App() {
     if (busy) next.add(id); else next.delete(id);
     return next;
   }), []);
+  const saving = savingStatus(state.save, connected, pendingChanges || busyEditors.size > 0);
 
   return (
     <div className="app">
       <header className="topbar">
         <strong>Notebook</strong>
+        <span role="status" aria-label="salvamento" aria-atomic="true" title={saving.detail}
+              className={saving.error ? "chip tone-error" : "muted"}>{saving.text}</span>
         {!connected && <span className="chip tone-error"><WifiOff size={14} aria-hidden="true" /> desconectado · reconectando…</span>}
         {kernel.dead && <span className="chip tone-error"><Skull size={14} aria-hidden="true" /> kernel morto</span>}
         {kernel.restarts > 0 && <span className="muted">reinícios do kernel: {kernel.restarts}</span>}
@@ -62,6 +66,10 @@ export function App() {
           <Network size={15} aria-hidden="true" /> grafo
         </button>
       </header>
+      {saving.retry && <div className="connection-notice">
+        <span>{saving.detail}</span>{" "}
+        <button onClick={() => send({ type: "retry_save" })}>tentar salvar novamente</button>
+      </div>}
       {notice && <div role="status" className="connection-notice">{notice} <button onClick={clearNotice}>fechar aviso</button></div>}
       <div className="body">
         <main className="cells">

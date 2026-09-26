@@ -42,9 +42,17 @@ export interface KernelState {
   event?: { id: string; kind: "crashed" | "interrupted"; cid: number | null } | null;
 }
 
+export interface SaveState {
+  status: "saving" | "saved" | "error";
+  revision: number;
+  saved_revision: number;
+  error: string | null;
+}
+
 export type ServerMsg =
-  | { type: "snapshot"; cells: CellJson[]; edges: [number, number][]; kernel: KernelState }
-  | { type: "update"; cells: CellJson[]; order: number[]; edges: [number, number][]; kernel: KernelState }
+  | { type: "snapshot"; cells: CellJson[]; edges: [number, number][]; kernel: KernelState; save?: SaveState }
+  | { type: "update"; cells: CellJson[]; order: number[]; edges: [number, number][]; kernel: KernelState; save?: SaveState }
+  | { type: "save_status"; save: SaveState }
   | { type: "added"; cid: number; request?: string }
   | { type: "ack"; seq: number }
   | { type: "conflict"; cid: number; cell: CellJson | null; request?: string; seq?: number }
@@ -56,4 +64,5 @@ export type ClientMsg =
   | { type: "run_all" }
   | { type: "add"; code: string; kind: Kind; after: number | null; request?: string }
   | { type: "delete"; cid: number }
-  | { type: "stop" };
+  | { type: "stop" }
+  | { type: "retry_save" };

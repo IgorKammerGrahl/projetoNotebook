@@ -17,13 +17,13 @@ class Socket {
 }
 
 function setup() {
-  const onStatus = vi.fn(), onMessage = vi.fn(), onNotice = vi.fn();
+  const onStatus = vi.fn(), onMessage = vi.fn(), onNotice = vi.fn(), onPendingChanges = vi.fn();
   const deps: Deps = {
     WS: Socket as unknown as Deps["WS"], now: Date.now,
     setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (t) => clearTimeout(t as number),
   };
-  const c = new Connection("ws://test", { onStatus, onMessage, onNotice }, deps);
-  return { c, onStatus, onMessage, onNotice, socket: Socket.all[0] };
+  const c = new Connection("ws://test", { onStatus, onMessage, onNotice, onPendingChanges }, deps);
+  return { c, onStatus, onMessage, onNotice, onPendingChanges, socket: Socket.all[0] };
 }
 
 beforeEach(() => { vi.useFakeTimers(); Socket.all = []; });
@@ -117,5 +117,46 @@ it("retries only versioned edits after a lost ACK, retaining the original base a
   const replacement = Socket.all[1];
   replacement.open();
   expect(replacement.sent[0]).toMatchObject({ code: "mine", base_version: "v1", request: "edit-1" });
+  c.close();
+});
+
+it.each(["add", "delete", "edit"] as const)("tracks unconfirmed %s even if the server reports an older snapshot as saved", (type) => {
+  const { c, socket, onPendingChanges } = setup();
+  if (type === "add") c.send({ type, code: "", kind: "markdown", after: null });
+  else if (type === "delete") c.send({ type, cid: 1 });
+  else c.send({ type, cid: 1, code: "mine", base_version: "v1", request: "r1" });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(true);
+  socket.open();
+  socket.receive({ type: "save_status", save: { status: "saved", revision: 0, saved_revision: 0, error: null } });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(true);
+  socket.receive({ type: "ack", seq: socket.sent[0].seq });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(false);
+  c.close();
+});
+
+it("keeps a resent edit pending until acknowledged on the replacement socket", () => {
+  const { c, socket, onPendingChanges } = setup();
+  socket.open();
+  c.send({ type: "edit", cid: 1, code: "mine", base_version: "v1", request: "r1" });
+  socket.disconnect();
+  expect(onPendingChanges).toHaveBeenLastCalledWith(true);
+  vi.advanceTimersByTime(500);
+  const replacement = Socket.all[1];
+  replacement.open();
+  socket.receive({ type: "ack", seq: socket.sent[0].seq });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(true);
+  replacement.receive({ type: "ack", seq: replacement.sent[0].seq });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(false);
+  c.close();
+});
+
+it("discarding an offline draft clears pending changes; execution actions do not dirty the file", () => {
+  const { c, onPendingChanges } = setup();
+  c.send({ type: "run", cid: 1 });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(false);
+  c.send({ type: "edit", cid: 1, code: "mine", base_version: "v1", request: "r1" });
+  expect(onPendingChanges).toHaveBeenLastCalledWith(true);
+  c.discardEdits(1);
+  expect(onPendingChanges).toHaveBeenLastCalledWith(false);
   c.close();
 });

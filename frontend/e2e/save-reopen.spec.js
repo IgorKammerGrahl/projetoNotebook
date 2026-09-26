@@ -1,6 +1,6 @@
 import { test, expect } from "@playwright/test";
 import { spawn, execFileSync } from "node:child_process";
-import { mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
+import { chmod, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -125,6 +125,8 @@ test("autosave preserves adjacent and empty Markdown across a server restart", a
     expect(await sourcesInUI(page)).toEqual(expected);
 
     // This check must precede stop(): shutdown flushes pending saves itself.
+    await expect(page.getByRole("status", { name: "salvamento", exact: true })).toHaveText("salvo");
+    expect(readSavedCells(path)).toEqual(expected);
     await expect.poll(() => readSavedCells(path), { timeout: 10_000 }).toEqual(expected);
     const autosaved = await readFile(path, "utf8");
     await page.goto("about:blank"); // prevent the old token from reconnecting during restart
@@ -145,6 +147,49 @@ test("autosave preserves adjacent and empty Markdown across a server restart", a
     for (const server of servers) await server.stop();
     if (testInfo.status !== testInfo.expectedStatus) {
       await testInfo.attach("server-log", { body: servers.map((s) => s.log()).join("\n--- restart ---\n"), contentType: "text/plain" });
+    }
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a disk permission failure survives reconnect and can be retried without losing edits", async ({ page }, testInfo) => {
+  const directory = await mkdtemp(join(tmpdir(), "notebook-save-error-"));
+  const path = join(directory, "failure.nb.md");
+  let server;
+  try {
+    await writeFile(path, "Original\n");
+    server = startServer(path);
+    await page.goto(await server.url);
+    const status = page.getByRole("status", { name: "salvamento", exact: true });
+    await expect(status).toHaveText("salvo");
+    // The notebook can still be read, but atomic replacement needs directory write permission.
+    await chmod(directory, 0o500);
+    await regions(page).first().locator(".rendered").dblclick();
+    const editor = regions(page).first().getByLabel(/^código da célula /);
+    await replaceMarkdown(page, editor, "Alteração preservada");
+    await editor.press("Shift+Enter");
+    await expect(status).toHaveText("falha ao salvar");
+    await expect(page.getByText(/Sem permissão para gravar o arquivo/)).toBeVisible();
+    expect(await readFile(path, "utf8")).toBe("Original\n");
+
+    // A fresh connection gets the failure and the unsaved source from the server snapshot.
+    await page.reload();
+    await expect(status).toHaveText("falha ao salvar");
+    await expect(regions(page).first().locator(".rendered")).toHaveText("Alteração preservada");
+    await page.screenshot({ path: testInfo.outputPath("save-error.png"), fullPage: true });
+    await chmod(directory, 0o700);
+    await page.getByRole("button", { name: "tentar salvar novamente", exact: true }).click();
+    await expect(status).toHaveText("salvo");
+    expect(readSavedCells(path)).toEqual([{ kind: "markdown", code: "Alteração preservada" }]);
+    await expect(page.getByRole("button", { name: "tentar salvar novamente", exact: true })).toHaveCount(0);
+  } finally {
+    await chmod(directory, 0o700);
+    await page.goto("about:blank").catch(() => {});
+    if (server) {
+      await server.stop();
+      if (testInfo.status !== testInfo.expectedStatus) {
+        await testInfo.attach("server-log", { body: server.log(), contentType: "text/plain" });
+      }
     }
     await rm(directory, { recursive: true, force: true });
   }

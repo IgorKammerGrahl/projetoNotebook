@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import type { CellJson, ClientMsg, Kind, Preview } from "./protocol";
@@ -39,13 +39,13 @@ export function Cell({ cell, all, edges, elapsed, onEdit, onRun, onDelete, onAdd
   }));
   const [, refresh] = useState(0);
   const update = (fn: () => void) => { fn(); refresh((n) => n + 1); };
-  useEffect(() => {
+  useLayoutEffect(() => {
     draft.observe(cell, rejected);
     refresh((n) => n + 1);
   }, [cell.version, cell.edit_id, rejected, draft]);
   const busy = draft.busy;
-  useEffect(() => { onBusy(cell.id, busy); }, [cell.id, busy, onBusy]);
-  useEffect(() => () => onBusy(cell.id, false), [cell.id, onBusy]);
+  useLayoutEffect(() => { onBusy(cell.id, busy); }, [cell.id, busy, onBusy]);
+  useLayoutEffect(() => () => onBusy(cell.id, false), [cell.id, onBusy]);
   const run = () => update(() => draft.requestRun());
 
   return (
