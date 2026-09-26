@@ -97,3 +97,7 @@ button:focus-visible, .node:focus-visible { outline: 2px solid var(--running); o
 @media (prefers-reduced-motion: reduce) {
   .spin, .tone-running.rail-solid::before, .flash { animation: none; }
 }
+
+.connection-notice, .edit-conflict { padding: 10px; border: 1px solid var(--modified); background: var(--bg-subtle); }
+.edit-conflict { border-radius: 6px; margin: 6px 0; }
+.edit-conflict p { margin: 0 0 8px; }

@@ -56,6 +56,7 @@ class Session:
         self.compiles = 0
         self.log: list[tuple[float, str, object]] = []  # (time, event, detail) for tests/benchmarks
         self.listeners = []                               # fn(changed: dict[cid, CellState]) per step
+        self._last_kernel_event = None
         self.speculative_nice = 10
         # Build slots (review): speculative builds are niced and preemptible. An explicit
         # build that finds every slot taken by speculative ones kills one and takes its slot.
@@ -152,7 +153,8 @@ class Session:
         self._after()
 
     def _after(self):
-        if self.sched.changed:
+        if self.sched.changed or self.sched.kernel_event != self._last_kernel_event:
+            self._last_kernel_event = self.sched.kernel_event
             changed = {cid: self.sched.cells[cid] for cid in self.sched.changed if cid in self.sched.cells}
             self.sched.changed.clear()
             for fn in self.listeners:

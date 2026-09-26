@@ -54,6 +54,8 @@ class NotebookServer:
         self.session = Session(self.path.parent / ".nbcache", core_dumps=core_dumps,
                                speculate_debounce=speculate_debounce)
         self.clients: dict[web.WebSocketResponse, asyncio.Queue] = {}  # one ordered outbox per client
+        self._epoch = secrets.token_hex(16)
+        self._edit_sources: dict[int, tuple[int, str | None]] = {}
         self._save_handle = None
         self._runner = None
 
@@ -170,22 +172,49 @@ class NotebookServer:
 
     def _snapshot(self):
         s = self.session.sched
-        return {"type": "snapshot", "cells": [cell_json(cid, c, s) for cid, c in s.cells.items()],
+        return {"type": "snapshot", "cells": [self._cell_json(cid) for cid in s.cells],
                 "edges": self._edges(), "kernel": self._kernel_state()}
+
+    def _cell_json(self, cid):
+        s = self.session.sched
+        c = s.cells[cid]
+        revision, request = self._edit_sources.get(cid, (-1, None))
+        return {**cell_json(cid, c, s), "version": f"{self._epoch}:{cid}:{c.revision}",
+                "edit_id": request if revision == c.revision else None}
 
     def _edges(self):
         parents, _, _ = self.session.sched._graph()
         return sorted([p, c] for c, ps in parents.items() for p in ps)
 
     def _kernel_state(self):
-        return {"restarts": self.session.restarts, "dead": self.session.sched.kernel_dead}
+        event = self.session.sched.kernel_event
+        return {"restarts": self.session.restarts, "dead": self.session.sched.kernel_dead,
+                "event": {**event, "id": f"{self._epoch}:{event['id']}"} if event else None}
 
     def _handle(self, ws, m):
         s = self.session
         kind = m.get("type")
         try:
             if kind == "edit":
-                s.edit(m["cid"], m["code"])
+                cid = m["cid"]
+                current = self._cell_json(cid) if cid in s.sched.cells else None
+                if not isinstance(m["code"], str):
+                    raise ValueError("code must be text")
+                request = m.get("request")
+                if request is not None and (not isinstance(request, str) or len(request) > 100):
+                    raise ValueError("invalid edit request")
+                # A retried edit with a lost ACK is safe only if this exact edit is
+                # still current. Otherwise compare the original base, never rebase.
+                if (current and request and current["edit_id"] == request and current["code"] == m["code"]):
+                    self.clients[ws].put_nowait({"type": "update", "cells": [current],
+                        "order": list(s.sched.cells), "edges": self._edges(), "kernel": self._kernel_state()})
+                    return
+                if current is None or m.get("base_version") != current["version"]:
+                    self.clients[ws].put_nowait({"type": "conflict", "cid": cid, "cell": current,
+                                                "request": request, "seq": m.get("seq")})
+                    return
+                self._edit_sources[cid] = (s.sched.cells[cid].revision + 1, request)
+                s.edit(cid, m["code"])
             elif kind == "run":
                 s.run(m["cid"])
             elif kind == "run_all":
@@ -195,6 +224,7 @@ class NotebookServer:
                 self.clients[ws].put_nowait({"type": "added", "cid": cid, "request": m.get("request")})
             elif kind == "delete":
                 s.delete(m["cid"])
+                self._edit_sources.pop(m["cid"], None)
             elif kind == "stop":
                 s.stop()
             else:
@@ -209,7 +239,7 @@ class NotebookServer:
             self._schedule_save()
 
     def _on_change(self, changed):
-        msg = {"type": "update", "cells": [cell_json(cid, c, self.session.sched) for cid, c in changed.items()],
+        msg = {"type": "update", "cells": [self._cell_json(cid) for cid in changed],
                "order": list(self.session.sched.cells), "edges": self._edges(),
                "kernel": self._kernel_state()}
         for outbox in self.clients.values():

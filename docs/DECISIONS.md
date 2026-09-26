@@ -476,10 +476,15 @@ terceiro.
   sem `allow-scripts`. Scripts ficam habilitados só se for pedido depois, e
   mesmo assim sem `allow-same-origin`.
 - **Protocolo WebSocket (JSON):**
-  - cliente → servidor: `edit {cid, code}`, `add {after, kind}`,
-    `delete {cid}`, `run {cid}`;
+  - cliente → servidor: `edit {cid, code, base_version, request}`, `add {after, kind}`,
+    `delete {cid}`, `run {cid}`, `run_all`, `stop`; o frontend inclui `seq` para
+    confirmar o despacho sem esperar o término da execução;
   - servidor → cliente: `snapshot` na conexão (células, estados, previews e
-    arestas), depois `cell {…}` e `graph {edges}` incrementais;
+    arestas), depois `update {cells, order, edges, kernel}`, `ack {seq}` e
+    `conflict {cid, cell, request, seq}`. Cada célula inclui `version` opaca e
+    `edit_id` da última edição aceita. A versão muda em cada edição e entre
+    instâncias do servidor; não depende apenas do conteúdo. Base ausente ou
+    diferente da atual é recusada antes de modificar o notebook;
   - o servidor grava o arquivo com debounce de 1 s depois de cada mudança.
 
 ## D-016 — Segurança local mínima (proposta — precisa de decisão sua)
@@ -735,19 +740,22 @@ interrupção, os diagnósticos em 2º plano e a regra da linha do cursor.
    de vista de cada célula, em vez de "`x` definido em [12] e [13]".
 4. **Sem estado "reiniciando…" no topo:** o servidor não expõe esse momento (um
    reinício leva ~100 ms). A barra mostra o número de reinícios, e a célula
-   culpada mostra `crashed` ou `interrupted`.
+   culpada mostra `crashed` ou `interrupted`. Registrado como **DEBT-014**.
 5. **Botão "rodar tudo"** no topo: não estava na D-019. É útil para ver
    `queued` e `stale`.
 6. **Markdown** renderizado com `marked` + `DOMPurify`: duas dependências a mais,
    não previstas.
 7. **HTML** num iframe de altura fixa (160 px), redimensionável. Com
    `sandbox=""` (sem `allow-same-origin`), a página não consegue medir o
-   conteúdo para ajustar a altura.
-8. **`aria-live`** anuncia só o resultado de execuções pedidas por este cliente
-   (Shift+Enter ou o botão ▶), e não as que vêm de "rodar tudo" ou da
-   recuperação de um crash.
-9. **Editor com foco nunca é sobrescrito** pelo código que vem do servidor
-   (suposição de um único editor por célula). Sem foco, o texto é sincronizado.
+   conteúdo para ajustar a altura. Registrado como **DEBT-013**.
+8. **Resolvido na revisão final:** `aria-live` atômico anuncia um único resumo
+   por incidente de crash/interrupção, identificado pelo servidor, inclusive
+   em “rodar tudo” e recuperação. Reconexões e updates repetidos não repetem
+   o anúncio; resultados da recuperação não o sobrescrevem.
+9. **Resolvido na revisão final:** mudança externa com foco ou rascunho pendente
+   mostra conflito na célula, com “manter a minha versão” / “carregar a do
+   servidor”. Ecos das próprias edições não geram conflito. Sem foco e sem
+   rascunho pendente, o texto continua sendo sincronizado.
 10. **Previews de módulos** (`import numpy as np`) não aparecem: eram só ruído.
     Mudança no backend, com teste pelo caminho real.
 

@@ -29,6 +29,7 @@ export function useNotebook(onMessage?: (m: ServerMsg) => void) {
     return () => c.close();
   }, []);
 
-  const send = useCallback((m: ClientMsg) => conn.current?.send(m), []);
-  return { state, send, notice, clearNotice: () => setNotice("") };
+  const send = useCallback((m: ClientMsg, queuedAt?: number) => conn.current?.send(m, queuedAt), []);
+  const discardEdits = useCallback((cid: number) => conn.current?.discardEdits(cid), []);
+  return { state, send, discardEdits, notice, setNotice, clearNotice: () => setNotice("") };
 }

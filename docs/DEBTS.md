@@ -1,7 +1,8 @@
 # Dívidas técnicas
 
-Cada dívida tem um teste em `tests/test_debts.py` que fixa o comportamento
-**atual**. Quando uma dívida for paga, o teste dela muda junto.
+As dívidas do kernel têm testes que fixam o comportamento **atual**.
+As dívidas de interface abaixo registram também o caminho de verificação manual.
+Quando uma dívida for paga, sua verificação muda junto.
 
 | # | Dívida | Teste | Pagar quando |
 |---|--------|-------|--------------|
@@ -17,3 +18,5 @@ Cada dívida tem um teste em `tests/test_debts.py` que fixa o comportamento
 | DEBT-010 | **Paga no caminho real (Fase 3, D-014):** a `Session` compila em tarefas assíncronas, paralelas e canceláveis (`tests/test_async_compile.py`), e a CLI usa a `Session`. Continua valendo só no driver síncrono `Engine`, que hoje só existe para os testes semânticos (DEBT-012). | `test_debt_010_compile_blocks_the_caller` (fixa o `Engine`) | Some junto com a DEBT-012. |
 | DEBT-011 | O cache em disco (`.nbcache/`) nunca é limpo: cada versão editada de cada célula deixa um `.so` e um `.mojo`. | `test_debt_011_disk_cache_is_never_evicted` | **Revisão C:** LRU por tamanho total do diretório, com limite configurável. |
 | DEBT-012 | **Testes semânticos pelo driver síncrono.** ~76 dos 100 testes anteriores à Fase 3 (grafo, células Mojo, dívidas) rodam pelo `Engine`, que executa o `Executor` in-process e lê os valores direto em `e.ns`. A lógica é a mesma do caminho real (scheduler, executor, `mojo`, análise); só 1 deles (`test_debt_010`) cobre algo que existe apenas no driver síncrono. **Mas nenhum deles atravessa a fronteira de processo nem a serialização JSON.** Essa lacuna escondeu um bug real: um preview de array `datetime64` ou complexo matava o kernel e culpava uma célula válida (achado ao passar a CLI para a `Session`). **Regra:** funcionalidade nova é testada só pelo caminho real (`Session` ou WebSocket). O `Engine` não ganha recurso novo. | `tests/test_session.py::test_previews_of_non_json_types_do_not_kill_the_kernel` (o bug que a lacuna escondeu) | Migrar os ~76 testes para a `Session`, com asserções sobre previews em vez de `e.ns`. Aí o `Engine` e o `mojo.build` síncrono podem ser apagados. |
+| DEBT-013 | **Altura automática do iframe HTML.** Atualmente começa em 160 px e permite redimensionamento manual. Implementar medição via `postMessage` com teto de altura, validando `event.source` contra o iframe e o formato/limites do valor recebido. O desenho precisa preservar o isolamento atual (`sandbox=""`, sem scripts do usuário nem mesma origem); não basta habilitar scripts arbitrários para medir. | Manual: célula HTML maior que 160 px mantém altura fixa; código em `Cell.tsx` e `.html-frame` em `styles.css`. | Próxima revisão de saída HTML; definir teto e canal restrito de medição antes da implementação. |
+| DEBT-014 | **Indicador de reinício do kernel.** Há contador de reinícios e resumo acessível de crash/interrupção, mas não existe estado transitório explícito “reiniciando…” no topo. | Manual: interromper um loop mostra a célula interrompida e atualiza o contador; não há indicador de reinício em andamento. | Expor início/fim/falha do reinício no protocolo e mostrar indicador até o kernel estar pronto, sem duplicar o anúncio de incidente. |

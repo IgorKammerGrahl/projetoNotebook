@@ -1,29 +1,20 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { Kind, ServerMsg, Status } from "./protocol";
 import { useNotebook } from "./socket";
 import { Cell } from "./Cell";
 import { Graph } from "./Graph";
 import { Network, Play, Skull, Square, WifiOff } from "./icons";
+import { Announcements } from "./announcements";
 
 const TIMED: Status[] = ["running", "compiling"];
-const ANNOUNCE: Partial<Record<Status, string>> = {
-  ok: "ok", error: "erro", "syntax-error": "erro de sintaxe", "compile-error": "erro de compilação",
-  crashed: "derrubou o kernel", interrupted: "interrompida", blocked: "bloqueada",
-};
-
 export function App() {
-  const [announcement, setAnnouncement] = useState("");
-  const userRuns = useRef(new Set<number>());   // cells whose result the user is waiting for
+  const [announcement, setAnnouncement] = useState({ text: "", serial: 0 });
+  const announcements = useRef(new Announcements());
   const onMessage = (m: ServerMsg) => {
-    if (m.type !== "update") return;
-    for (const c of m.cells) {
-      if (userRuns.current.has(c.id) && ANNOUNCE[c.status]) {
-        userRuns.current.delete(c.id);
-        setAnnouncement(`Célula ${c.id}: ${ANNOUNCE[c.status]}`);
-      }
-    }
+    const text = announcements.current.receive(m);
+    if (text) setAnnouncement((prev) => ({ text, serial: prev.serial + 1 }));
   };
-  const { state, send, notice, clearNotice } = useNotebook(onMessage);
+  const { state, send, discardEdits, notice, setNotice, clearNotice } = useNotebook(onMessage);
   const { cells, order, edges, kernel, connected } = state;
 
   // elapsed time of running / compiling cells, ticking every 100 ms
@@ -44,7 +35,14 @@ export function App() {
 
   const running = order.some((id) => cells[id].status === "running");
   const [showGraph, setShowGraph] = useState(true);
-  const run = (id: number) => { userRuns.current.add(id); send({ type: "run", cid: id }); };
+  const run = (id: number, at: number) => { announcements.current.userRuns.add(id); send({ type: "run", cid: id }, at); };
+  const [busyEditors, setBusyEditors] = useState(new Set<number>());
+  const onBusy = useCallback((id: number, busy: boolean) => setBusyEditors((prev) => {
+    if (prev.has(id) === busy) return prev;
+    const next = new Set(prev);
+    if (busy) next.add(id); else next.delete(id);
+    return next;
+  }), []);
 
   return (
     <div className="app">
@@ -54,7 +52,8 @@ export function App() {
         {kernel.dead && <span className="chip tone-error"><Skull size={14} aria-hidden="true" /> kernel morto</span>}
         {kernel.restarts > 0 && <span className="muted">reinícios do kernel: {kernel.restarts}</span>}
         <span className="spacer" />
-        <button onClick={() => send({ type: "run_all" })}><Play size={15} aria-hidden="true" /> rodar tudo</button>
+        <button onClick={() => send({ type: "run_all" })} disabled={busyEditors.size > 0}
+                title={busyEditors.size ? "Aguarde as edições pendentes e resolva os conflitos" : undefined}><Play size={15} aria-hidden="true" /> rodar tudo</button>
         <button onClick={() => send({ type: "stop" })} disabled={!running} className="stop"
                 title="Mata o kernel; a célula em execução fica interrompida e o resto é reexecutado">
           <Square size={15} aria-hidden="true" /> parar
@@ -72,15 +71,16 @@ export function App() {
           {order.map((id) => (
             <Cell key={id} cell={cells[id]} all={cells} edges={edges}
                   elapsed={since.current.has(id) ? Math.max(0, Date.now() - since.current.get(id)!.t) : undefined}
-                  onEdit={(code) => send({ type: "edit", cid: id, code })}
-                  onRun={() => run(id)}
+                  onEdit={send} rejected={state.conflicts[id]} onBusy={onBusy}
+                  onNotice={setNotice} onCancelEdits={() => discardEdits(id)}
+                  onRun={(at) => run(id, at)}
                   onDelete={() => send({ type: "delete", cid: id })}
                   onAdd={(kind: Kind) => send({ type: "add", code: "", kind, after: id })} />
           ))}
         </main>
         {showGraph && <aside className="graph-panel"><Graph cells={cells} order={order} edges={edges} /></aside>}
       </div>
-      <div className="sr-only" aria-live="polite">{announcement}</div>
+      <div className="sr-only" aria-live="polite" aria-atomic="true"><span key={announcement.serial}>{announcement.text}</span></div>
     </div>
   );
 }

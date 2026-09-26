@@ -22,6 +22,8 @@ export interface CellJson {
   id: number;
   kind: Kind;
   code: string;
+  version: string;
+  edit_id: string | null;
   status: Status;
   error: string;
   output: string;
@@ -37,6 +39,7 @@ export interface CellJson {
 export interface KernelState {
   restarts: number;
   dead: boolean;
+  event?: { id: string; kind: "crashed" | "interrupted"; cid: number | null } | null;
 }
 
 export type ServerMsg =
@@ -44,10 +47,11 @@ export type ServerMsg =
   | { type: "update"; cells: CellJson[]; order: number[]; edges: [number, number][]; kernel: KernelState }
   | { type: "added"; cid: number; request?: string }
   | { type: "ack"; seq: number }
+  | { type: "conflict"; cid: number; cell: CellJson | null; request?: string; seq?: number }
   | { type: "error"; error: string; seq?: number };
 
 export type ClientMsg =
-  | { type: "edit"; cid: number; code: string }
+  | { type: "edit"; cid: number; code: string; base_version: string; request: string }
   | { type: "run"; cid: number }
   | { type: "run_all" }
   | { type: "add"; code: string; kind: Kind; after: number | null; request?: string }

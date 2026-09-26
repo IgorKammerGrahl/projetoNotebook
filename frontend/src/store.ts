@@ -7,10 +7,11 @@ export interface NotebookState {
   edges: [number, number][];
   kernel: KernelState;
   connected: boolean;
+  conflicts: Record<number, string | undefined>;
 }
 
 export const empty: NotebookState = {
-  cells: {}, order: [], edges: [], kernel: { restarts: 0, dead: false }, connected: false,
+  cells: {}, order: [], edges: [], kernel: { restarts: 0, dead: false }, connected: false, conflicts: {},
 };
 
 export function reduce(state: NotebookState, msg: ServerMsg): NotebookState {
@@ -22,6 +23,7 @@ export function reduce(state: NotebookState, msg: ServerMsg): NotebookState {
         edges: msg.edges,
         kernel: msg.kernel,
         connected: true,
+        conflicts: state.conflicts,
       };
     case "update": {
       const cells = { ...state.cells };
@@ -29,6 +31,9 @@ export function reduce(state: NotebookState, msg: ServerMsg): NotebookState {
       for (const id of Object.keys(cells).map(Number)) if (!msg.order.includes(id)) delete cells[id];
       return { ...state, cells, order: msg.order, edges: msg.edges, kernel: msg.kernel };
     }
+    case "conflict":
+      return { ...state, cells: msg.cell ? { ...state.cells, [msg.cid]: msg.cell } : state.cells,
+        conflicts: { ...state.conflicts, [msg.cid]: msg.request } };
     default:
       return state;
   }

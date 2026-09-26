@@ -77,6 +77,7 @@ class Kill:
 class CellState:
     code: str
     kind: str = "python"
+    revision: int = 0
     defs: set[str] = field(default_factory=set)
     refs: set[str] = field(default_factory=set)
     syntax_error: str = ""            # static; set by analysis
@@ -171,6 +172,7 @@ class Scheduler:
         self.stop_requested = False
         self.orphan_deaths = 0
         self.kernel_dead = False
+        self.kernel_event: dict | None = None
         self.changed: set[int] = set()         # for the driver to broadcast
         self.queue_positions: dict[int, int] = {}  # queued cell -> 1-based place in line
         self._ids = itertools.count(1)
@@ -197,6 +199,8 @@ class Scheduler:
         new = _analyzed(code, c.kind)
         c.defs_at_run |= c.defs  # readers/co-definers of names it drops must re-run on the next run
         c.code, c.defs, c.refs, c.syntax_error = new.code, new.defs, new.refs, new.syntax_error
+        c.revision += 1
+        self.changed.add(cid)  # source/version changes must be published even while running
         c.quarantine = ""
         c.interface_diagnostics = (_interface_diagnostics(c.syntax_error)
                                    if c.kind == "mojo" and c.syntax_error else [])
@@ -299,6 +303,9 @@ class Scheduler:
         """D-013: quarantine the running cell, restart, re-run the rest."""
         ex, self.running = self.running, None
         stopped, self.stop_requested = self.stop_requested, False
+        self.kernel_event = {"id": (self.kernel_event["id"] if self.kernel_event else 0) + 1,
+                             "kind": "interrupted" if stopped else "crashed",
+                             "cid": ex.cid if ex is not None else None}
         if ex is not None and ex.cid in self.cells:
             c = self.cells[ex.cid]
             if stopped:

@@ -7,7 +7,7 @@ import { place, underlined } from "./diagnostics";
 import { layers } from "./Graph";
 
 const cell = (id: number, over: Partial<CellJson> = {}): CellJson => ({
-  id, kind: "python", code: "", status: "ok", error: "", output: "", previews: {}, defs: [], refs: [],
+  id, kind: "python", code: "", version: `v${id}`, edit_id: null, status: "ok", error: "", output: "", previews: {}, defs: [], refs: [],
   upstream_modified: [], compiling: false, diagnostics: [], queue_position: null, ...over,
 });
 

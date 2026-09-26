@@ -205,3 +205,60 @@ ela causou o incidente observado anteriormente.
   erro sem matar o leitor. Logs identificam conexão e sequência sem imprimir fonte.
 - Validação: **17 testes WebSocket/backend, 18 testes frontend; build aprovado**.
   O Vite mantém o aviso preexistente de bundle >500 kB.
+
+## Revisão final do frontend — itens 2–5
+
+Implementação concluída após o commit separado do item 1 (`e5f1753`).
+
+- **Edições offline versionadas:** `edit` inclui `base_version` e um `request`
+  que identifica aquela edição. O servidor compara a base antes de alterar a
+  célula e retorna `conflict` com o estado atual se ela estiver ausente ou
+  obsoleta. A versão inclui instância do servidor, célula e revisão; voltar ao
+  mesmo texto ou reiniciar o servidor não torna uma versão antiga válida.
+- **Digitação e reconexão:** cada célula mantém no máximo uma edição aguardando
+  aceitação. Teclas posteriores ficam no rascunho e só usam a versão resultante
+  da própria edição aceita. Uma mudança de outro cliente nunca serve de base
+  automaticamente. Edições sem ACK podem ser reenviadas com a base e o pedido
+  originais; se a mesma edição ainda for a atual, o servidor confirma sem
+  incrementar a revisão. Caso contrário, a comparação de versão continua
+  valendo. Isso amplia apenas para edições a política do item 1: execuções já
+  enviadas continuam sem repetição automática.
+- **Execuções antigas:** `run`/`run_all` aguardando envio há mais de 5 s são
+  descartados com aviso. A mesma proteção vale para `stop` atrasado. Shift+Enter
+  aguarda a aceitação do último rascunho e conserva o horário original do pedido;
+  uma espera de mais de 5 s também descarta essa execução. “Rodar tudo” fica
+  indisponível enquanto houver edições pendentes ou conflitos, com explicação
+  no título do botão.
+- **Conflito na célula (desvio 9):** mudança externa com editor em foco ou com
+  rascunho pendente mantém o texto local e mostra “manter a minha versão” /
+  “carregar a do servidor”. A primeira ação tenta gravar contra a versão mais
+  recente conhecida (uma nova corrida ainda pode ser recusada); a segunda
+  carrega o texto sem ecoá-lo como edição. Perder o foco não apaga o conflito.
+- **Resumo acessível (desvio 8):** cada crash/interrupção recebe um identificador
+  de incidente, preservado nos updates e snapshots. Uma região `aria-live`
+  atômica anuncia um resumo por identificador, inclusive em “rodar tudo” e
+  recuperação. Updates repetidos, resultados das células recuperadas e
+  reconexão não repetem nem sobrescrevem o resumo. Falha definitiva de reinício
+  não anuncia recuperação bem-sucedida.
+- **Dívidas registradas:** DEBT-013, altura automática do iframe via
+  `postMessage` com teto e preservação do isolamento; DEBT-014, indicador
+  explícito de reinício do kernel.
+
+### Validação final
+
+- **179 testes backend aprovados:** 78 de WebSocket, Session, compilação
+  assíncrona e scheduler; 101 dos demais módulos, incluindo CLI, Mojo real,
+  análise, formato, engine e dívidas. A tentativa de CLI dentro do sandbox
+  falhou/travou e foi interrompida; todos os 101 passaram fora dele.
+- **33 testes frontend aprovados:** conexão e eventos tardios, limite de 5 s,
+  preservação da base no reenvio, digitação durante ACK pendente, conflito com
+  foco/rascunho offline, ambas as escolhas, prioridade e deduplicação do anúncio.
+- **Build TypeScript + Vite aprovado.** Permanece o aviso já existente de bundle
+  maior que 500 kB; não foi adicionada dependência.
+- A ferramenta de navegador não encontrou nenhuma superfície conectada, e o
+  navegador interno retornou indisponível. **Não houve nova validação visual nem
+  com leitor de tela real nesta sessão**; comportamento coberto por testes da
+  lógica usada pelos componentes e integração WebSocket/processos reais.
+- A causa do incidente original de “parar”/edição sem efeito continua não
+  determinada, conforme o relatório do item 1. Os testes na mesma conexão e a
+  regressão de ciclo de vida corrigida não provam retrospectivamente essa causa.

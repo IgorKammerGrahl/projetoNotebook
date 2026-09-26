@@ -1,5 +1,5 @@
-// CodeMirror 6 editor for one cell. The local document is the source of truth while
-// the user edits; code from the server replaces it only when the editor is not focused.
+// CodeMirror view of the cell's draft. Draft decides whether external changes
+// require a conflict choice before they may replace this document.
 import { useEffect, useRef } from "react";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { python } from "@codemirror/lang-python";
@@ -17,15 +17,16 @@ interface Props {
   diagnostics: Diagnostic[];
   onChange: (code: string) => void;
   onRun: () => void;
+  onFocusChange: (focused: boolean) => void;
   autoFocus?: boolean;
   label: string;
 }
 
-export function Editor({ code, kind, diagnostics, onChange, onRun, autoFocus, label }: Props) {
+export function Editor({ code, kind, diagnostics, onChange, onRun, onFocusChange, autoFocus, label }: Props) {
   const host = useRef<HTMLDivElement>(null);
   const view = useRef<EditorView | null>(null);
-  const cb = useRef({ onChange, onRun });
-  cb.current = { onChange, onRun };
+  const cb = useRef({ onChange, onRun, onFocusChange });
+  cb.current = { onChange, onRun, onFocusChange };
 
   useEffect(() => {
     const v = new EditorView({
@@ -41,6 +42,10 @@ export function Editor({ code, kind, diagnostics, onChange, onRun, autoFocus, la
           diagnosticsExtension,
           EditorView.lineWrapping,
           EditorView.contentAttributes.of({ "aria-label": label }),
+          EditorView.domEventHandlers({
+            focus: () => { cb.current.onFocusChange(true); },
+            blur: () => { cb.current.onFocusChange(false); },
+          }),
           EditorView.updateListener.of((u) => {
             if (u.docChanged && !u.transactions.some((t) => t.annotation(External))) {
               cb.current.onChange(u.state.doc.toString());
@@ -51,13 +56,13 @@ export function Editor({ code, kind, diagnostics, onChange, onRun, autoFocus, la
     });
     view.current = v;
     if (autoFocus) v.focus();
-    return () => v.destroy();
+    return () => { cb.current.onFocusChange(false); v.destroy(); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [kind]);
 
-  useEffect(() => {  // external code (reload, another client): only when not being edited
+  useEffect(() => {
     const v = view.current;
-    if (v && !v.hasFocus && v.state.doc.toString() !== code) {
+    if (v && v.state.doc.toString() !== code) {
       v.dispatch({ changes: { from: 0, to: v.state.doc.length, insert: code }, annotations: External.of(true) });
     }
   }, [code]);

@@ -1,9 +1,10 @@
 // Transport lifecycle is independent of React and injectable for deterministic tests.
-// ACK confirms dispatch, not completion. Already-written commands are never replayed:
-// a missing ACK cannot tell us whether a side effect ran before the connection failed.
+// ACK confirms dispatch, not completion. Only version-checked edits may be retried;
+// a missing ACK cannot tell us whether an execution ran before the connection failed.
 import type { ClientMsg, ServerMsg } from "./protocol";
 
 export const ACK_TIMEOUT_MS = 3000;
+export const RUN_TTL_MS = 5000;
 export interface Deps {
   WS: new (url: string) => WebSocket;
   now: () => number;
@@ -25,7 +26,7 @@ export class Connection {
   private sock: WebSocket | null = null;
   private seq = 0;
   private pending: Pending[] = [];
-  private awaiting = new Map<number, number>();
+  private awaiting = new Map<number, Pending & { sentAt: number }>();
   private delay = 250;
   private closed = false;
   private retry: unknown = null;
@@ -35,13 +36,17 @@ export class Connection {
     this.connect();
   }
 
-  send(msg: ClientMsg) {
+  send(msg: ClientMsg, queuedAt = this.d.now()) {
     if (this.closed) return;
     if (msg.type === "edit") {
       this.pending = this.pending.filter((p) => !(p.msg.type === "edit" && p.msg.cid === msg.cid));
     }
-    this.pending.push({ msg, queuedAt: this.d.now() });
+    this.pending.push({ msg, queuedAt });
     this.flush(); // OPEN, not a possibly stale React connected flag, controls delivery
+  }
+
+  discardEdits(cid: number) {
+    this.pending = this.pending.filter((p) => p.msg.type !== "edit" || p.msg.cid !== cid);
   }
 
   close() {
@@ -60,6 +65,9 @@ export class Connection {
     this.watchdog = null;
     if (this.awaiting.size) {
       this.h.onNotice?.("Conexão perdida sem confirmação. Verifique o resultado antes de executar novamente.");
+      // Version checks make edit retries safe; execution side effects cannot be replayed.
+      const edits = [...this.awaiting.values()].filter((p) => p.msg.type === "edit");
+      this.pending = [...edits, ...this.pending];
       this.awaiting.clear();
     }
     this.h.onStatus(false);
@@ -69,10 +77,10 @@ export class Connection {
 
   private armWatchdog() {
     if (this.watchdog !== null || !this.awaiting.size) return;
-    const oldest = Math.min(...this.awaiting.values());
+    const oldest = Math.min(...[...this.awaiting.values()].map((p) => p.sentAt));
     this.watchdog = this.d.setTimeout(() => {
       this.watchdog = null;
-      if (this.sock && this.awaiting.size && this.d.now() - Math.min(...this.awaiting.values()) >= ACK_TIMEOUT_MS) {
+      if (this.sock && this.awaiting.size && this.d.now() - Math.min(...[...this.awaiting.values()].map((p) => p.sentAt)) >= ACK_TIMEOUT_MS) {
         this.reconnect(this.sock); // do not wait for an unresponsive peer's close handshake
       } else this.armWatchdog();
     }, Math.max(0, ACK_TIMEOUT_MS - (this.d.now() - oldest)));
@@ -91,13 +99,14 @@ export class Connection {
     sock.onmessage = (e: MessageEvent) => {
       if (this.closed || this.sock !== sock) return;
       const m = JSON.parse(e.data) as ServerMsg;
-      if (m.type === "ack" || (m.type === "error" && m.seq !== undefined)) {
+      if (m.type === "ack" || ((m.type === "error" || m.type === "conflict") && m.seq !== undefined)) {
         this.awaiting.delete(m.seq!);
         this.d.clearTimeout(this.watchdog);
         this.watchdog = null;
         this.armWatchdog();
       }
       if (m.type === "error") this.h.onNotice?.(m.error);
+      if (m.type === "conflict" && !m.cell) this.h.onNotice?.("A célula editada foi removida no servidor; a edição não foi aplicada.");
       this.h.onMessage(m);
     };
     sock.onclose = () => this.reconnect(sock);
@@ -106,6 +115,11 @@ export class Connection {
   private flush() {
     while (this.pending.length && this.sock?.readyState === 1) {
       const p = this.pending[0];
+      if ((p.msg.type === "run" || p.msg.type === "run_all" || p.msg.type === "stop") && this.d.now() - p.queuedAt > RUN_TTL_MS) {
+        this.pending.shift();
+        this.h.onNotice?.("Ação de execução descartada: ficou mais de 5 s na fila offline. Execute novamente se desejar.");
+        continue;
+      }
       const seq = ++this.seq;
       try {
         this.sock.send(JSON.stringify({ ...p.msg, seq }));
@@ -114,7 +128,7 @@ export class Connection {
         return; // send threw: keep this unsent message queued
       }
       this.pending.shift();
-      this.awaiting.set(seq, this.d.now());
+      this.awaiting.set(seq, { ...p, sentAt: this.d.now() });
       this.armWatchdog();
     }
   }

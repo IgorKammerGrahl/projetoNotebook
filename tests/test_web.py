@@ -115,7 +115,7 @@ async def test_snapshot_edit_run_and_save(srv, http, path):
     assert snap["type"] == "snapshot" and [c["status"] for c in snap["cells"]] == ["idle", "ok", "ok"]
     md, a, b = (c["id"] for c in snap["cells"])
     assert snap["edges"] == [[a, b]]
-    await ws.send_json({"type": "edit", "cid": a, "code": "a = 100"})
+    await ws.send_json({"type": "edit", "cid": a, "base_version": srv._cell_json(a)["version"], "code": "a = 100"})
     m = await recv_until(ws, lambda m: any(c["id"] == a and c["status"] == "modified" for c in m.get("cells", [])))
     child = next(c for c in m["cells"] if c["id"] == b)          # review item 6: flag reaches the frontend
     assert "queue_position" in child
@@ -186,7 +186,7 @@ def test_protocol_exposes_compiling_flag_and_diagnostics(tmp_path):  # review it
         await ws.receive_json()
         await ws.send_json({"type": "add", "kind": "mojo", "code": "def run(mut t: Int) raises:\n    t = 1"})
         cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
-        await ws.send_json({"type": "edit", "cid": cid,
+        await ws.send_json({"type": "edit", "cid": cid, "base_version": srv._cell_json(cid)["version"],
                             "code": f"# nonce {uuid.uuid4().hex}\ndef run(mut t: Int) raises:\n    t = nope"})
         await recv_until(ws, lambda m: any(c["id"] == cid and c["compiling"] for c in m.get("cells", [])))
         m = await recv_until(ws, lambda m: any(c["id"] == cid and c["diagnostics"] for c in m.get("cells", [])))
@@ -245,7 +245,7 @@ async def test_edit_and_run_on_the_same_connection_during_a_long_build(srv, http
     await ws.send_json({"type": "run", "cid": m})
     await cell_status(ws, m, "compiling")
     t0 = asyncio.get_running_loop().time()
-    await ws.send_json({"type": "edit", "cid": a, "code": "a = 7"})   # same connection, mid-build
+    await ws.send_json({"type": "edit", "cid": a, "base_version": srv._cell_json(a)["version"], "code": "a = 7"})   # same connection, mid-build
     await ws.send_json({"type": "run", "cid": a})
     msg = await cell_status(ws, a, "ok", timeout=10)
     python_done = asyncio.get_running_loop().time() - t0
@@ -294,11 +294,11 @@ async def test_edit_on_same_connection_while_promoted_build_is_held(srv, http, p
     with patch.object(srv.session, "_build", held_build):
         await ws.send_json({"type": "add", "kind": "mojo", "code": ""})
         cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
-        await ws.send_json({"type": "edit", "cid": cid, "code": "def run(mut out: Int):\n    out = 42"})
+        await ws.send_json({"type": "edit", "cid": cid, "base_version": srv._cell_json(cid)["version"], "code": "def run(mut out: Int):\n    out = 42"})
         await asyncio.wait_for(started.wait(), 3)
         await ws.send_json({"type": "run", "cid": cid})
         await cell_status(ws, cid, "compiling")
-        await ws.send_json({"type": "edit", "cid": a, "code": "a = 9"})
+        await ws.send_json({"type": "edit", "cid": a, "base_version": srv._cell_json(a)["version"], "code": "a = 9"})
         await ws.send_json({"type": "run", "cid": a})
         result = await cell_status(ws, a, "ok", timeout=3)
         assert next(c for c in result["cells"] if c["id"] == a)["previews"]["a"]["repr"] == "9"
@@ -320,3 +320,119 @@ def test_writer_failure_closes_the_connection():
         await NotebookServer._writer(ws, outbox)
         ws.close.assert_awaited_once()
     asyncio.run(main())
+
+
+@with_server
+async def test_stale_offline_edit_cannot_overwrite_another_client_even_after_code_returns_to_original(srv, http, path):
+    ws1 = await http.ws_connect(ws_url(srv), headers=good(srv))
+    old = (await ws1.receive_json())["cells"][1]
+    await ws1.close()  # client keeps an offline edit based on this version
+    ws2 = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws2.receive_json()
+    cid = old["id"]
+    for code in ("a = 99", old["code"]):
+        await ws2.send_json({"type": "edit", "cid": cid, "code": code,
+                            "base_version": srv._cell_json(cid)["version"]})
+        await recv_until(ws2, lambda m: any(c["id"] == cid and c["code"] == code for c in m.get("cells", [])))
+    ws1 = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws1.receive_json()
+    await ws1.send_json({"type": "edit", "cid": cid, "code": "a = -1", "request": "offline",
+                         "base_version": old["version"], "seq": 1})
+    conflict = await recv_until(ws1, lambda m: m["type"] == "conflict")
+    assert conflict["request"] == "offline"
+    assert conflict["cell"]["code"] == old["code"]
+    assert conflict["cell"]["version"] != old["version"]
+    assert srv.session.sched.cells[cid].code == old["code"]
+    # Explicitly keeping the local draft still uses CAS against the latest version.
+    await ws1.send_json({"type": "edit", "cid": cid, "code": "a = -1", "request": "resolved",
+                         "base_version": conflict["cell"]["version"]})
+    accepted = await recv_until(ws1, lambda m: any(c.get("edit_id") == "resolved" for c in m.get("cells", [])))
+    assert next(c for c in accepted["cells"] if c["id"] == cid)["code"] == "a = -1"
+    await ws1.close()
+    await ws2.close()
+
+
+@with_server
+async def test_edit_requires_a_version_and_retry_does_not_create_another_revision(srv, http, path):
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    old = (await ws.receive_json())["cells"][1]
+    edit = {"type": "edit", "cid": old["id"], "code": "a = 7", "request": "once"}
+    await ws.send_json(edit)
+    assert (await recv_until(ws, lambda m: m["type"] == "conflict"))["cell"]["version"] == old["version"]
+    edit["base_version"] = old["version"]
+    await ws.send_json(edit)
+    await recv_until(ws, lambda m: any(c.get("edit_id") == "once" for c in m.get("cells", [])))
+    accepted_version = srv._cell_json(old["id"])["version"]
+    await ws.close()
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws.receive_json()
+    await ws.send_json(edit)  # ACK lost before reconnect: same edit is still current
+    reply = await recv_until(ws, lambda m: any(c.get("edit_id") == "once" for c in m.get("cells", [])))
+    assert next(c for c in reply["cells"] if c["id"] == old["id"])["version"] == accepted_version
+    await ws.close()
+
+
+@with_server
+async def test_version_from_another_server_lifetime_is_rejected(srv, http, path):
+    old = srv._cell_json(2)
+    other = NotebookServer(path)
+    await other.start()
+    try:
+        await other.session.idle()
+        ws = await http.ws_connect(ws_url(other), headers=good(other))
+        await ws.receive_json()
+        await ws.send_json({"type": "edit", "cid": 2, "code": "a = 9", "base_version": old["version"]})
+        conflict = await recv_until(ws, lambda m: m["type"] == "conflict")
+        assert conflict["cell"]["code"] == old["code"]
+        assert conflict["cell"]["version"] != old["version"]
+        await ws.close()
+    finally:
+        await other.close()
+
+
+@with_server
+async def test_kernel_incident_id_is_stable_through_recovery_and_reconnect(srv, http, path):
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws.receive_json()
+    await ws.send_json({"type": "add", "code": "import os as _os\n_os._exit(23)"})
+    cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
+    await ws.send_json({"type": "run_all"})
+    crash = await cell_status(ws, cid, "crashed")
+    event = crash["kernel"]["event"]
+    assert event["kind"] == "crashed" and event["cid"] == cid
+    await srv.session.idle()
+    assert srv._kernel_state()["event"] == event
+    await ws.close()
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    assert (await ws.receive_json())["kernel"]["event"] == event
+    await ws.send_json({"type": "edit", "cid": cid, "code": "while True: pass",
+                        "base_version": srv._cell_json(cid)["version"]})
+    await ws.send_json({"type": "run_all"})
+    await cell_status(ws, cid, "running")
+    await ws.send_json({"type": "stop"})
+    stop = await cell_status(ws, cid, "interrupted")
+    assert stop["kernel"]["event"]["kind"] == "interrupted"
+    assert stop["kernel"]["event"]["id"] != event["id"]
+    await srv.session.idle()
+    assert srv._kernel_state()["event"] == stop["kernel"]["event"]
+    await ws.close()
+
+
+@with_server
+async def test_edit_of_running_cell_publishes_accepted_source_before_completion(srv, http, path):
+    ws = await http.ws_connect(ws_url(srv), headers=good(srv))
+    await ws.receive_json()
+    await ws.send_json({"type": "add", "code": "while True: pass"})
+    cid = (await recv_until(ws, lambda m: m["type"] == "added"))["cid"]
+    old = srv._cell_json(cid)
+    await ws.send_json({"type": "run", "cid": cid})
+    await cell_status(ws, cid, "running")
+    await ws.send_json({"type": "edit", "cid": cid, "code": "answer = 42", "request": "during-run",
+                        "base_version": old["version"]})
+    result = await recv_until(ws, lambda m: any(c.get("edit_id") == "during-run" for c in m.get("cells", [])), timeout=3)
+    edited = next(c for c in result["cells"] if c["id"] == cid)
+    assert edited["status"] == "running" and edited["code"] == "answer = 42"
+    assert edited["version"] != old["version"]
+    await ws.send_json({"type": "stop"})
+    await cell_status(ws, cid, "interrupted")
+    await ws.close()
