@@ -53,15 +53,23 @@ pixi run npm --prefix frontend run dev
 pixi run test            # backend (pytest)
 pixi run frontend-test   # lógica do frontend (vitest)
 pixi run frontend-e2e-install # instala o Chromium do Playwright (primeiro uso)
-pixi run frontend-e2e     # build + teste no navegador, sem janela
+pixi run frontend-e2e     # build + testes no navegador, sem janela
 ```
 
-Os testes no navegador criam notebooks temporários. Um edita Markdown, confere o
-autosave e reabre o arquivo em outro processo do servidor. Verifica conteúdo,
-tipo e ordem das células, incluindo Markdown consecutivo e vazio. Outro provoca
-uma falha real de permissão de escrita, reconecta e salva a mesma edição usando
-a nova tentativa. Em caso de falha, capturam imagem, trace e logs em
-`frontend/test-results/`.
+Os testes no navegador usam Chromium, notebooks temporários e o servidor real.
+Cobrem:
+
+- autosave e reabertura em outro processo, preservando conteúdo, tipo e ordem
+  das células, incluindo Markdown consecutivo e vazio;
+- falha real de permissão de escrita, reconexão e nova tentativa de salvar;
+- interrupção de loop infinito e edição durante um build Mojo promovido, na
+  mesma conexão que iniciou o trabalho;
+- edições offline, descarte de execuções antigas e conflitos entre duas abas,
+  com ambas as escolhas de resolução;
+- crash real de Mojo durante “rodar tudo”, recuperação, preservação do código
+  e anúncio único do incidente na região acessível.
+
+Em caso de falha, capturam imagem, trace e logs em `frontend/test-results/`.
 
 O formato de gravação preserva células Markdown consecutivas, vazias e com
 exemplos de código. Quando necessário, inclui o cabeçalho

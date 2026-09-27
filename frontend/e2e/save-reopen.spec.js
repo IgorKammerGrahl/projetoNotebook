@@ -1,69 +1,13 @@
 import { test, expect } from "@playwright/test";
-import { spawn, execFileSync } from "node:child_process";
 import { chmod, mkdtemp, writeFile, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-
-const root = fileURLToPath(new URL("../../", import.meta.url));
+import { startServer, readSavedCells, regions, replaceMarkdown } from "./helpers.js";
 const original = [
   { kind: "python", code: "number = 7" },
   { kind: "mojo", code: "def run(number: Int, mut doubled: Int):\n    doubled = number * 2" },
   { kind: "html", code: "<p>HTML preservado</p>" },
 ];
-
-function startServer(path) {
-  const child = spawn("python", ["-m", "kernel", "serve", path, "--port", "0"], {
-    cwd: root, detached: true, stdio: ["ignore", "pipe", "pipe"],
-  });
-  let log = "";
-  const exited = new Promise((resolve) => child.once("close", resolve));
-  const url = new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Server did not start:\n${log}`)), 15_000);
-    child.once("error", (error) => { clearTimeout(timer); reject(error); });
-    child.once("exit", (code) => { clearTimeout(timer); reject(new Error(`Server exited (${code}):\n${log}`)); });
-    child.stderr.on("data", (chunk) => { log += chunk; });
-    child.stdout.on("data", (chunk) => {
-      log += chunk;
-      const match = log.match(/notebook: (http:\/\/127\.0\.0\.1:\d+\/\?token=\S+)/);
-      if (match) { clearTimeout(timer); resolve(match[1]); }
-    });
-  });
-  return {
-    url,
-    log: () => log,
-    async stop() {
-      if (child.exitCode !== null || child.signalCode !== null) return;
-      child.kill("SIGINT");
-      const timer = setTimeout(() => {
-        try { process.kill(-child.pid, "SIGKILL"); } catch (error) { if (error.code !== "ESRCH") throw error; }
-      }, 5000);
-      try { await exited; } finally { clearTimeout(timer); }
-    },
-  };
-}
-
-function readSavedCells(path) {
-  // Use the production reader, and compare against independently specified cells.
-  const json = execFileSync("python", ["-c",
-    "import json, sys; from pathlib import Path; from dataclasses import asdict; from kernel.fmt import parse; print(json.dumps([asdict(c) for c in parse(Path(sys.argv[1]).read_text())]))",
-    path], { cwd: root, encoding: "utf8" });
-  return JSON.parse(json);
-}
-
-const regions = (page) => page.getByRole("region", { name: /^célula \d+, / });
-
-async function replaceMarkdown(page, editor, code) {
-  await editor.click();
-  await editor.press("ControlOrMeta+A");
-  await editor.press("Backspace");
-  const lines = code.split("\n");
-  for (let i = 0; i < lines.length; i++) {
-    if (i) await editor.press("Enter");
-    if (lines[i]) await page.keyboard.insertText(lines[i]);
-  }
-  await expect.poll(() => editor.locator(".cm-line").allTextContents()).toEqual(lines);
-}
 
 async function sourcesInUI(page) {
   const result = [];

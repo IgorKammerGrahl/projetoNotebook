@@ -334,3 +334,49 @@ falha no frontend e sem tentativa final no encerramento após esse erro.
 **Limite explícito:** este bloco recupera uma gravação falha enquanto a fonte
 permanece em memória. Rascunhos persistidos e recuperação após encerramento
 forçado do servidor/navegador ainda não estão implementados.
+
+## Após a v0.1.0 — fluxos críticos no navegador
+
+O salvamento visível foi consolidado no commit `26e5112`. Este bloco acrescenta
+sete cenários Playwright aos dois existentes, usando Chromium e processos reais
+do servidor/kernel. Não houve alteração no código do aplicativo nem dependência
+nova. Os helpers compartilhados ficam em `frontend/e2e/helpers.js`.
+
+- **Interrupção:** inicia um loop infinito por Shift+Enter, clica “parar”,
+  verifica interrupção, reinício, preservação da fonte e anúncio único. Depois
+  edita e executa outras células e a própria célula interrompida. A observação
+  passiva do WebSocket confirma uma única conexão e `run` seguido de `stop`.
+- **Build promovido:** um wrapper temporário de `mojo`, exclusivo do servidor
+  de teste, segura uma compilação marcada antes de chamar o compilador real.
+  O teste promove esse build especulativo pela interface, edita/executa Python
+  na mesma conexão enquanto a barreira está fechada e confirma que a promoção
+  conserva o processo. Ao liberar a barreira, compila e verifica o resultado
+  Mojo e o arquivo salvo. Assim a duração não depende da velocidade da máquina.
+- **Fila offline:** interrompe o transporte, edita e pede execução simples,
+  “rodar tudo” e Shift+Enter aguardando a edição. Avança o relógio do navegador
+  em 6 s e reconecta. A fonte é salva, o aviso aparece e nenhuma execução antiga
+  atravessa o socket; um contador no disco confirma a ausência de efeitos.
+  Uma execução nova funciona. O transporte encaminha mensagens reais, sem
+  fabricar ACKs, snapshots ou respostas do aplicativo.
+- **Conflitos:** duas abas modificam a mesma célula com o primeiro editor em
+  foco. Cada escolha (“manter a minha versão” / “carregar a do servidor”) tem
+  seu próprio teste, com comparação dos dois editores e do arquivo salvo.
+  Outro caso reconecta uma edição com base obsoleta, recebe o conflito do
+  servidor e confirma que resolver o conflito não repete o Shift+Enter pendente.
+- **Crash:** uma célula Mojo provoca SIGSEGV real durante “rodar tudo”. O teste
+  verifica quarentena, bloqueio de descendentes sem preview antigo, recuperação
+  das células sobreviventes e preservação da fonte na tela e no disco.
+  Recuperação e reconexão mantêm um único anúncio; corrigir a célula permite
+  executá-la e atualizar seus descendentes sem outro reinício.
+
+**Validação:** `pixi run frontend-e2e` aprovou os **9 testes Chromium**, sem
+retries, em 30,3 s; build TypeScript + Vite aprovado. Permanece o aviso
+preexistente de bundle maior que 500 kB. A captura da recuperação do crash foi
+inspecionada. As duas falhas na primeira execução eram seletores de teste que
+não aceitavam o espaço entre o ícone e o texto do status; foram corrigidos.
+Backend e testes unitários do frontend não foram alterados nem reexecutados
+neste bloco.
+
+**Limites:** os anúncios são observados na região `aria-live` do DOM, sem leitor
+de tela real. Esta validação protege os fluxos atuais; a causa do incidente
+original de “parar”/edição sem efeito continua não determinada.
