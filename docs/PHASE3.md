@@ -380,3 +380,55 @@ neste bloco.
 **Limites:** os anúncios são observados na região `aria-live` do DOM, sem leitor
 de tela real. Esta validação protege os fluxos atuais; a causa do incidente
 original de “parar”/edição sem efeito continua não determinada.
+
+## Após a v0.1.0 — recuperação de rascunhos (D-021)
+
+Os fluxos críticos foram consolidados em `828371d`. Este bloco permite fechar
+ou perder navegador/servidor e recuperar código que ainda não chegou ao arquivo.
+
+- O servidor identifica o notebook pelo caminho resolvido e fornece UIDs de
+  célula que sobrevivem a gravação, reinício e reordenação. O formato 2 guarda
+  esses UIDs; os formatos anteriores continuam legíveis. O arquivo legado não
+  é regravado só por abrir, e uma alteração externa antes da migração produz
+  rascunhos órfãos em vez de associá-los por posição a outra célula.
+- O editor protege cada versão digitada em IndexedDB antes de enviá-la. A
+  confirmação local é distinta de “salvo”, que continua confirmando o arquivo.
+  Quota, indisponibilidade e dados inválidos geram aviso; falhas preservam a
+  cópia anterior. ACK e aceitação no servidor não apagam a recuperação.
+- O painel compara rascunho e versão atual, permite ambas as escolhas de
+  conflito e oferece criar uma célula quando a original não existe. Recuperação
+  não executa código nem restaura comandos pendentes. A oferta original só é
+  descartada quando o texto escolhido chega ao arquivo, ou por escolha explícita.
+- A revisão cobriu versões imutáveis entre abas, troca de documento com leitura
+  falha, digitação durante recuperação, conclusões assíncronas após desmontagem
+  e perda da confirmação ao criar uma célula. Corrigiu também a reutilização de
+  uma cópia em limpeza quando um novo conflito preservava o mesmo texto; esse
+  caso agora cria uma nova cópia e tem teste de regressão.
+
+**Defeito encontrado pelo teste de crash:** a primeira implementação usava
+`localStorage`. Fechar o navegador normalmente preservava o rascunho, mas
+SIGKILL no processo Chromium após uma falha de salvamento perdia a escrita
+recente. Não foi adicionado atraso para fazer o teste passar: a persistência
+foi trocada por IndexedDB, com transação `strict` e confirmação por `complete`.
+O mesmo cenário de encerramento forçado passou com ambas as escolhas de conflito.
+
+**Validação:**
+- **217 testes backend aprovados**, incluindo identidade entre instâncias,
+  reordenação externa, versões antigas recusadas e formato inválido rejeitado.
+- **58 testes frontend aprovados**, incluindo regressões de filas, salvamento,
+  conflitos, falhas de armazenamento e concorrência da recuperação.
+- **14 testes Chromium aprovados**, sem retries: os nove existentes e cinco
+  de recuperação. Os novos usam perfil persistente real, fechamento do processo
+  do navegador, SIGKILL do servidor e do Chromium de teste, falha real de
+  permissão no diretório, mudança externa de código/ordem e célula removida.
+  Comparam a fonte gravada e verificam a ausência de execução por mensagens
+  WebSocket e arquivo sentinela. Armazenamento local indisponível exibe aviso
+  sem impedir o salvamento no arquivo. A captura de conflito foi inspecionada.
+- Build TypeScript + Vite aprovado; permanece o aviso preexistente de bundle
+  maior que 500 kB. Sem nova dependência.
+
+**Limites de uso:** mesmo perfil, origem e caminho do notebook. Copiar/mover o
+arquivo ou trocar host/porta não migra rascunhos. Dados do site apagados removem
+as cópias. A proteção vale após a confirmação local da transação e cobre fonte,
+não um histórico de inclusões/exclusões/ordenação. Edições externas com o servidor
+aberto e múltiplos servidores no mesmo arquivo continuam sem coordenação.

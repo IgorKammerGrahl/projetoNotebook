@@ -7,6 +7,7 @@ hijacking) and the random token printed at startup.
 """
 import asyncio
 import errno
+import hashlib
 import json
 import logging
 import math
@@ -17,14 +18,14 @@ from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from .fmt import parse, serialize
+from .fmt import Document, parse_document, serialize_document
 from .session import Session
 
 SAVE_DEBOUNCE = 1.0  # seconds after the last change (D-015)
 log = logging.getLogger("notebook.web")
 
 
-def _write_notebook(path, cells):
+def _write_notebook(path, document):
     """One immutable snapshot, replaced atomically; all disk I/O runs off the loop."""
     tmp = None
     try:
@@ -33,7 +34,7 @@ def _write_notebook(path, cells):
             tmp = Path(f.name)
             if path.exists():
                 os.fchmod(f.fileno(), path.stat().st_mode & 0o777)
-            f.write(serialize(cells))
+            f.write(serialize_document(document))
             f.flush()
             os.fsync(f.fileno())
         tmp.replace(path)
@@ -85,6 +86,8 @@ class NotebookServer:
                                speculate_debounce=speculate_debounce)
         self.clients: dict[web.WebSocketResponse, asyncio.Queue] = {}  # one ordered outbox per client
         self._epoch = secrets.token_hex(16)
+        self._document_id = hashlib.sha256(str(self.path.resolve()).encode()).hexdigest()
+        self._cell_ids: dict[int, str] = {}
         self._edit_sources: dict[int, tuple[int, str | None]] = {}
         self._save_handle = None
         self._save_task = None
@@ -113,6 +116,8 @@ class NotebookServer:
     # ---------------- lifecycle ----------------
 
     async def start(self):
+        exists = self.path.exists()
+        document = parse_document(self.path.read_text(encoding="utf-8") if exists else "")
         app = web.Application(middlewares=[self._check_host])
         app.router.add_get("/ws", self._ws)
         app.router.add_get("/", self._index)
@@ -126,8 +131,8 @@ class NotebookServer:
         self.port = self.bound[0][1]
         await self.session.start()
         self.session.listeners.append(self._on_change)
-        exists = self.path.exists()
-        self.session.load(parse(self.path.read_text()) if exists else [])
+        self.session.load(document.cells)
+        self._cell_ids = dict(zip(self.session.sched.cells, document.cell_ids))
         self._source_versions = self._document_version()
         self._loading = False
         if not exists:
@@ -233,13 +238,15 @@ class NotebookServer:
     def _snapshot(self):
         s = self.session.sched
         return {"type": "snapshot", "cells": [self._cell_json(cid) for cid in s.cells],
-                "edges": self._edges(), "kernel": self._kernel_state(), "save": self._save_state()}
+                "edges": self._edges(), "kernel": self._kernel_state(), "save": self._save_state(),
+                "document": {"id": self._document_id, "name": self.path.name, "session": self._epoch}}
 
     def _cell_json(self, cid):
         s = self.session.sched
         c = s.cells[cid]
         revision, request = self._edit_sources.get(cid, (-1, None))
-        return {**cell_json(cid, c, s), "version": f"{self._epoch}:{cid}:{c.revision}",
+        return {**cell_json(cid, c, s), "uid": self._cell_ids.setdefault(cid, secrets.token_hex(16)),
+                "version": f"{self._epoch}:{cid}:{c.revision}",
                 "edit_id": request if revision == c.revision else None}
 
     def _edges(self):
@@ -288,6 +295,7 @@ class NotebookServer:
             elif kind == "delete":
                 s.delete(m["cid"])
                 self._edit_sources.pop(m["cid"], None)
+                self._cell_ids.pop(m["cid"], None)
             elif kind == "stop":
                 s.stop()
             elif kind == "retry_save":
@@ -350,8 +358,9 @@ class NotebookServer:
             while self._saved_revision != self._revision:
                 revision = self._revision
                 cells = self.session.to_file_cells()  # copy on the loop, before crossing threads
+                document = Document(cells, [self._cell_json(cid)["uid"] for cid in self.session.sched.cells])
                 try:
-                    await asyncio.to_thread(_write_notebook, self.path, cells)
+                    await asyncio.to_thread(_write_notebook, self.path, document)
                 except Exception as exc:
                     reason = {errno.EACCES: "Sem permissão para gravar o arquivo.",
                               errno.EPERM: "Sem permissão para gravar o arquivo.",

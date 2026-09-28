@@ -52,6 +52,11 @@ export class Connection {
     this.reportPendingChanges();
   }
 
+  discardAddition(request: string) {
+    this.pending = this.pending.filter((p) => p.msg.type !== "add" || p.msg.request !== request);
+    this.reportPendingChanges();
+  }
+
   private reportPendingChanges() {
     const changesFile = (p: Pending) => p.msg.type === "edit" || p.msg.type === "add" || p.msg.type === "delete";
     this.h.onPendingChanges?.(this.pending.some(changesFile) || [...this.awaiting.values()].some(changesFile));

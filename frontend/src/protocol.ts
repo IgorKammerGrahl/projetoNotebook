@@ -20,6 +20,7 @@ export type Preview =
 
 export interface CellJson {
   id: number;
+  uid?: string;
   kind: Kind;
   code: string;
   version: string;
@@ -49,8 +50,10 @@ export interface SaveState {
   error: string | null;
 }
 
+export interface DocumentIdentity { id: string; name: string; session: string }
+
 export type ServerMsg =
-  | { type: "snapshot"; cells: CellJson[]; edges: [number, number][]; kernel: KernelState; save?: SaveState }
+  | { type: "snapshot"; cells: CellJson[]; edges: [number, number][]; kernel: KernelState; save?: SaveState; document?: DocumentIdentity }
   | { type: "update"; cells: CellJson[]; order: number[]; edges: [number, number][]; kernel: KernelState; save?: SaveState }
   | { type: "save_status"; save: SaveState }
   | { type: "added"; cid: number; request?: string }

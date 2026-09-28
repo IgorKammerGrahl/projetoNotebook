@@ -118,8 +118,8 @@ células Python, Mojo, Markdown e HTML.
 - Nos arquivos sem cabeçalho de versão, o texto entre duas células de código é
   **uma** célula Markdown, sem linhas em branco nas bordas. Essa leitura continua
   compatível com os notebooks antigos.
-- Não há ids de célula no arquivo; a identidade das células existe só na memória
-  do kernel. O arquivo preserva ordem, tipo e fonte; ids não sobrevivem à reabertura.
+- Nos formatos originais não havia ids de célula no arquivo. **Substituído por
+  D-021:** o servidor agora grava identificadores persistentes no formato 2.
 
 **Extensão após a v0.1.0 (DEBT-006):** o writer usa o formato antigo quando sua
 releitura reproduz exatamente as células. Caso contrário, escreve na primeira
@@ -152,6 +152,17 @@ Primeira célula.
 - O leitor da **v0.1.0 não suporta essa extensão**: arquivos com esse cabeçalho
   devem ser abertos na versão atual. Reabrir com o leitor antigo pode fundir
   células e interpretar exemplos cercados como código executável.
+
+**Formato 2 (D-021, 2026-09-28):** o servidor grava todas as células com um
+comentário `<!-- notebook-cell: <32 dígitos hexadecimais> -->`, seguido de cerca
+com o tipo `python`, `mojo`, `html` ou `markdown`. O cabeçalho da primeira linha
+é `<!-- notebook-format: 2 -->`. Mesmo Markdown é um payload opaco cercado;
+seus exemplos não viram células executáveis. O writer escolhe crases em número
+maior que qualquer sequência na fonte. Células vazias, bordas em branco e
+normalização CRLF → LF mantêm as regras anteriores. IDs inválidos/duplicados,
+tipos desconhecidos, texto fora dos blocos e cercas abertas são recusados antes
+de iniciar o servidor/kernel. Os leitores de formatos anteriores não entendem
+esta extensão; a leitura atual aceita os três formatos.
 
 ## D-008 — Regras do grafo Python (2026-09-23)
 
@@ -851,11 +862,90 @@ fonte, inclusão, exclusão ou ordem; resultados de execução não a alteram.
   propagada após fechar sockets, processo do kernel e servidor HTTP, para que a
   CLI não termine como se tivesse salvo normalmente.
 
-**Limites:** recuperação automática após queda do servidor/navegador e rascunhos
-persistidos no cliente ficam para outro bloco. Alterações ainda não gravadas
-existem apenas em memória. O controle de revisão cobre clientes do mesmo
+**Limites à época:** rascunhos persistidos ficaram para D-021, implementada
+abaixo. O controle de revisão cobre clientes do mesmo
 servidor; modificações externas do arquivo e múltiplos servidores no mesmo
 arquivo não são coordenados.
 
 **Verificação:** `tests/test_persistence.py`, `frontend/src/saving.test.ts`,
 `frontend/src/connection.test.ts` e `frontend/e2e/save-reopen.spec.js`.
+
+## D-021 — Recuperação explícita de rascunhos locais (2026-09-28)
+
+**Contexto:** o ACK e a aceitação da edição não garantem que ela esteja no
+arquivo. Uma aba fechada perdia o texto digitado offline ou depois da última
+edição enviada; uma queda do servidor também podia perder edições aceitas
+durante o debounce ou uma falha de disco.
+
+**Identidade:** o snapshot traz `document {id, name, session}`. `id` é SHA-256
+do caminho absoluto resolvido do arquivo, independente de porta, token e sessão;
+cópias em outro caminho não herdam seus rascunhos. Cada célula possui `uid`
+persistido no formato 2, separado do número usado pelo scheduler. Versões de
+edição continuam incluindo a instância do servidor e continuam sendo comparadas
+antes da alteração. Reiniciar não torna uma base antiga válida.
+
+Notebooks legados não são regravados só por abrir. Até a primeira gravação,
+os UIDs derivam do hash do documento inteiro normalizado e da posição. Reabrir
+o mesmo arquivo intacto conserva a identidade; modificá-lo externamente antes
+de migrar torna os rascunhos órfãos. Nunca se associa uma cópia a outra célula
+apenas porque ela ocupa a mesma posição. Após a migração, editar/reordenar os
+blocos mantendo seus marcadores preserva a associação.
+
+**Persistência local:**
+- Antes de enviar uma edição, o editor grava fonte, base original, tipo, UID,
+  documento e data em IndexedDB. Aguarda `transaction.complete` de uma transação
+  com `durability: "strict"`; texto digitado enquanto outra edição aguarda
+  aceitação também é protegido. A interface distingue “protegendo rascunho…” de
+  “rascunho protegido neste navegador”. Não se persistem comandos, filas de
+  execução, tokens ou `runAt`. Uma falha avisa e permite continuar salvando no
+  servidor. A escolha de durabilidade segue a [especificação IndexedDB](https://www.w3.org/TR/IndexedDB/#durability-hint).
+- Cada versão digitada ganha uma chave imutável exclusiva. A nova cópia é
+  escrita na mesma transação que remove a anterior; falhas revertem ambas as
+  operações. Abas não atualizam uma lista comum nem
+  sobrescrevem a chave de outra aba. Excluir uma oferta antiga não pode apagar
+  uma digitação que aconteceu entre sua leitura e remoção. A remoção também
+  compara o conteúdo dentro da transação. `BroadcastChannel` avisa as outras
+  abas para relerem as ofertas após o commit.
+- Uma cópia ativa só é limpa automaticamente quando o editor reconhece a
+  aceitação daquela fonte/versão, o estado atual da célula ainda corresponde e
+  `saved_revision == revision` com status `saved` e conexão ativa. Receber ACK,
+  uma gravação anterior ou um snapshot desatualizado não basta.
+- Ao trocar documento/sessão, as cópias persistidas voltam a ser ofertas;
+  ofertas do documento anterior não permanecem se a leitura local falhar.
+  Registros desconhecidos ou inválidos não são aplicados nem apagados em silêncio.
+  O limite é de 1 milhão de caracteres por fonte/base e aproximadamente 2 milhões
+  por registro serializado, sujeito à quota menor do navegador. Falhas geram
+  aviso persistente para manter a aba aberta ou copiar o texto.
+
+**Recuperação:**
+- O painel permite comparar o rascunho com a fonte atual. Se ela difere da base
+  e do rascunho, mostra conflito com as escolhas “usar rascunho” / “manter versão
+  do servidor”. A escrita ainda passa pela comparação de versão no servidor;
+  uma nova corrida gera o conflito existente na célula.
+- O texto recuperado é primeiro copiado para uma chave da aba atual. A oferta
+  original fica oculta durante a recuperação, mas só é apagada após a confirmação
+  de gravação do destino no notebook. Não se sobrescreve um rascunho ativo
+  da célula para aplicar uma segunda oferta. Rascunhos sem célula correspondente
+  podem ser copiados para uma nova célula, mediante ação explícita. Digitação ou
+  troca de documento durante a leitura assíncrona cancela a aplicação. Callbacks
+  de persistência de editores desmontados não enviam comandos.
+- Recuperar zera execução pendente e não envia `run`/`run_all`. A criação de
+  célula também não executa seu conteúdo. A inicialização normal do servidor
+  continua executando as células já existentes no arquivo, conforme D-015.
+- Se a criação de uma célula perde a confirmação, a interface libera a espera
+  e pede conferir se a célula apareceu antes de tentar novamente. Uma criação
+  ainda não enviada é removida da fila; não se repete uma já enviada.
+
+**Limites:** trata-se de recuperação de fonte das células editadas neste
+navegador, não de histórico de versões ou backup do notebook inteiro. Exclusões,
+ordenação e comandos offline não ganham um diário persistente. O navegador
+isola o armazenamento por perfil/origem; mudar host, porta, perfil ou caminho
+do arquivo não migra rascunhos. Limpar dados do site os remove. Uma transação ainda
+em andamento não oferece a confirmação de proteção local; não há promessa de
+preservar teclas ainda não confirmadas numa queda do navegador/sistema. Alterações externas
+do arquivo enquanto o servidor continua aberto e múltiplos servidores no mesmo
+arquivo permanecem fora da coordenação de D-020.
+
+**Verificação:** `tests/test_format.py`, `tests/test_recovery.py`,
+`frontend/src/recovery.test.ts`, `frontend/src/connection.test.ts` e
+`frontend/e2e/recovery.spec.js`, além das regressões de salvamento e conflitos.

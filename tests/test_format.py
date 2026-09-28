@@ -1,4 +1,4 @@
-from kernel.fmt import Cell, parse, serialize
+from kernel.fmt import Cell, Document, parse, parse_document, serialize, serialize_document
 import pytest
 
 DOC = """# Título
@@ -90,3 +90,36 @@ def test_broken_explicit_markdown_is_rejected_before_any_cells_can_load(opening)
 def test_explicit_format_accepts_crlf_files():
     cells = [Cell("markdown", "a"), Cell("markdown", "b")]
     assert parse(serialize(cells).replace("\n", "\r\n")) == cells
+
+
+def test_identified_document_preserves_opaque_cells_and_ids():
+    cells = [Cell("markdown", "\n```python\nraise RuntimeError('example')\n```\n"),
+             Cell("markdown", ""), Cell("python", "a = 2\n"), Cell("html", "<p>hi</p>")]
+    document = Document(cells, [f"{i:032x}" for i in range(len(cells))])
+    saved = serialize_document(document)
+    assert parse_document(saved) == document
+    assert parse_document(saved.replace("\n", "\r\n")) == document
+    assert parse(saved) == cells  # CLI and existing format consumers retain their interface
+    assert serialize_document(parse_document(saved)) == saved
+    assert parse_document(serialize_document(Document([], []))) == Document([], [])
+
+
+@pytest.mark.parametrize("body", [
+    "unexpected Markdown",
+    "<!-- notebook-cell: bad -->\n```python\na = 1\n```",
+    "<!-- notebook-cell: " + "a" * 32 + " -->\n```python\nunclosed",
+    "<!-- notebook-cell: " + "a" * 32 + " -->\n```unknown\nx\n```",
+    ("<!-- notebook-cell: " + "a" * 32 + " -->\n```python\nx\n```\n") * 2,
+])
+def test_invalid_identified_files_fail_before_loading_any_cell(body):
+    with pytest.raises(ValueError):
+        parse("<!-- notebook-format: 2 -->\n" + body)
+
+
+def test_legacy_identity_requires_the_same_entire_document():
+    first = parse_document("```python\nx = 1\n```\n\n```python\nx = 1\n```\n")
+    again = parse_document("```python\nx = 1\n```\n\n```python\nx = 1\n```\n")
+    changed = parse_document("```python\nx = 2\n```\n\n```python\nx = 1\n```\n")
+    assert first.cell_ids == again.cell_ids
+    assert len(set(first.cell_ids)) == 2
+    assert not set(first.cell_ids) & set(changed.cell_ids)

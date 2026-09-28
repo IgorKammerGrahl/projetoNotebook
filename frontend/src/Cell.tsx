@@ -19,6 +19,11 @@ interface Props {
   onNotice: (text: string) => void;
   onBusy: (id: number, busy: boolean) => void;
   rejected?: string;
+  restore?: { id: string; entryId: string; code: string; version: string; expectedCode: string };
+  onRestoreRejected: (entryId: string, code: string) => void;
+  onDraft: (code: string, base: string) => Promise<boolean>;
+  onAccepted: (code: string, version: string) => void;
+  onDiscardDraft: () => void;
   onDelete: () => void;
   onAdd: (kind: Kind) => void;
 }
@@ -27,22 +32,38 @@ const KIND_LABEL: Record<Kind, string> = { python: "python", mojo: "mojo", markd
 const HAS_ERROR_PANEL = ["error", "syntax-error", "compile-error", "multiple-definition", "cycle", "blocked",
   "crashed", "interrupted"];
 
-export function Cell({ cell, all, edges, elapsed, onEdit, onRun, onDelete, onAdd, onCancelEdits, onNotice, onBusy, rejected }: Props) {
+export function Cell({ cell, all, edges, elapsed, onEdit, onRun, onDelete, onAdd, onCancelEdits, onNotice, onBusy, rejected,
+                       restore, onRestoreRejected, onDraft, onAccepted, onDiscardDraft }: Props) {
   const l = look(cell, all, edges, elapsed);
   const graph = cell.kind === "python" || cell.kind === "mojo";
   const [editing, setEditing] = useState(!graph && cell.code === "");
-  const callbacks = useRef({ onEdit, onRun, onCancelEdits, onNotice });
-  callbacks.current = { onEdit, onRun, onCancelEdits, onNotice };
+  const callbacks = useRef({ onEdit, onRun, onCancelEdits, onNotice, onDraft, onAccepted, onDiscardDraft });
+  callbacks.current = { onEdit, onRun, onCancelEdits, onNotice, onDraft, onAccepted, onDiscardDraft };
   const [draft] = useState(() => new Draft(cell, {
     edit: (m) => callbacks.current.onEdit(m), run: (at) => callbacks.current.onRun(at),
     cancel: () => callbacks.current.onCancelEdits(), notice: (text) => callbacks.current.onNotice(text),
+    persist: (code, base) => callbacks.current.onDraft(code, base),
+    accepted: (code, version) => callbacks.current.onAccepted(code, version),
+    discard: () => callbacks.current.onDiscardDraft(),
   }));
   const [, refresh] = useState(0);
   const update = (fn: () => void) => { fn(); refresh((n) => n + 1); };
+  useLayoutEffect(() => { draft.activate(); return () => draft.dispose(); }, [draft]);
   useLayoutEffect(() => {
     draft.observe(cell, rejected);
     refresh((n) => n + 1);
   }, [cell.version, cell.edit_id, rejected, draft]);
+  const restored = useRef("");
+  useLayoutEffect(() => {
+    if (!restore || restored.current === restore.id) return;
+    restored.current = restore.id;
+    if (!draft.restore(restore.code, restore.version, restore.expectedCode)) {
+      onRestoreRejected(restore.entryId, restore.code);
+      return;
+    }
+    setEditing(true);
+    refresh((n) => n + 1);
+  }, [restore, draft]);
   const busy = draft.busy;
   useLayoutEffect(() => { onBusy(cell.id, busy); }, [cell.id, busy, onBusy]);
   useLayoutEffect(() => () => onBusy(cell.id, false), [cell.id, onBusy]);

@@ -138,7 +138,7 @@ def test_disk_failures_are_visible_and_retry_preserves_the_accepted_edit(tmp_pat
                 assert failed["revision"] == 1 and failed["saved_revision"] == 0
                 assert failed["error"]
                 assert not list(tmp_path.glob(".t.nb.md.*.tmp"))
-                assert path.read_text() == ("Preserve me\n" if stage == "directory_sync" else "Original\n")
+                assert parse(path.read_text()) == [Cell("markdown", "Preserve me" if stage == "directory_sync" else "Original")]
                 assert server.session.to_file_cells() == [Cell("markdown", "Preserve me")]
                 other = await connect(http, server)
                 assert (await other.receive_json())["save"] == failed

@@ -29,8 +29,21 @@ interface aguarda reconectar para confirmar o estado do arquivo.
 
 Se aparecer **“falha ao salvar”**, corrija a permissão ou libere espaço e use
 **“tentar salvar novamente”**. As alterações aceitas permanecem na memória do
-servidor; rascunhos locais permanecem na aba. Mantenha ambos abertos até aparecer
-“salvo”: recuperação de rascunhos após encerramento forçado ainda não existe.
+servidor. O navegador também mantém cópias das edições locais até a confirmação
+de gravação no arquivo. **“Rascunho protegido neste navegador”** confirma essa
+cópia local; enquanto aparecer “protegendo rascunho…”, a gravação local está
+em andamento. **“Salvo”** continua se referindo ao arquivo do notebook.
+
+Após fechar ou perder o navegador/servidor, inicie o servidor para **o mesmo
+arquivo e porta** e abra a nova URL impressa, no mesmo perfil do navegador.
+O painel **“Rascunhos disponíveis neste navegador”** permite comparar e
+recuperar o texto, sem executar a célula. Se o arquivo mudou, escolha qual
+versão manter; se a célula desapareceu, recupere em uma nova célula.
+
+Essas cópias pertencem ao perfil e à origem usados (`127.0.0.1` e `localhost`
+são origens diferentes). Limpar os dados do site remove os rascunhos. Se o
+armazenamento local falhar ou ficar cheio, a interface avisa: mantenha a aba
+aberta até salvar no arquivo ou copie o código.
 
 Opções úteis de `serve`:
 - `--port`;
@@ -67,14 +80,18 @@ Cobrem:
 - edições offline, descarte de execuções antigas e conflitos entre duas abas,
   com ambas as escolhas de resolução;
 - crash real de Mojo durante “rodar tudo”, recuperação, preservação do código
-  e anúncio único do incidente na região acessível.
+  e anúncio único do incidente na região acessível;
+- recuperação de rascunhos após encerrar navegador e servidor, incluindo
+  interrupção forçada dos processos, conflitos após edição externa e células
+  removidas, sem repetir execuções pendentes.
 
 Em caso de falha, capturam imagem, trace e logs em `frontend/test-results/`.
 
-O formato de gravação preserva células Markdown consecutivas, vazias e com
-exemplos de código. Quando necessário, inclui o cabeçalho
-`<!-- notebook-format: 1 -->` e delimitadores de célula; esses arquivos exigem o
-leitor atual, posterior à v0.1.0. Notebooks antigos continuam sendo aceitos.
+Ao salvar, o servidor escreve `<!-- notebook-format: 2 -->` e identificadores
+de célula, preservando conteúdo, ordem e identidade entre reinícios. Markdown
+consecutivo, vazio e com exemplos de código continua preservado. Arquivos sem
+cabeçalho e com a versão 1 continuam sendo aceitos; arquivos da versão 2 exigem
+este leitor atualizado.
 Detalhes em [D-007](docs/DECISIONS.md#d-007--formato-do-arquivo-do-notebook-markdown-com-blocos-cercados-2026-09-23).
 
 **Sem navegador:** `pixi run python -m kernel run arquivo.nb.md` roda tudo uma vez

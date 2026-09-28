@@ -30,6 +30,15 @@ beforeEach(() => { vi.useFakeTimers(); Socket.all = []; });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("connection lifecycle", () => {
+  it("cancels an unsent recovery addition before reconnection without discarding other work", () => {
+    const { c, socket } = setup();
+    c.send({ type: "add", kind: "python", code: "recovered", after: null, request: "recovery" });
+    c.send({ type: "add", kind: "markdown", code: "other", after: null, request: "other" });
+    c.discardAddition("recovery");
+    socket.open();
+    expect(socket.sent.map((m) => m.request)).toEqual(["other"]);
+    c.close();
+  });
   it("writes to an OPEN socket even before a snapshot has set UI connected", () => {
     const { c, socket, onStatus } = setup();
     c.send({ type: "stop" });

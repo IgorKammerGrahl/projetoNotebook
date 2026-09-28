@@ -1,5 +1,5 @@
 // Notebook state as the server reports it. Pure reducer (tested).
-import type { CellJson, KernelState, SaveState, ServerMsg } from "./protocol";
+import type { CellJson, DocumentIdentity, KernelState, SaveState, ServerMsg } from "./protocol";
 
 export interface NotebookState {
   cells: Record<number, CellJson>;
@@ -8,6 +8,7 @@ export interface NotebookState {
   kernel: KernelState;
   connected: boolean;
   save: SaveState | null;
+  document?: DocumentIdentity;
   conflicts: Record<number, string | undefined>;
 }
 
@@ -25,7 +26,8 @@ export function reduce(state: NotebookState, msg: ServerMsg): NotebookState {
         kernel: msg.kernel,
         connected: true,
         save: msg.save ?? null,
-        conflicts: state.conflicts,
+        document: msg.document,
+        conflicts: msg.document?.session === state.document?.session ? state.conflicts : {},
       };
     case "update": {
       const cells = { ...state.cells };

@@ -101,3 +101,13 @@ button:focus-visible, .node:focus-visible { outline: 2px solid var(--running); o
 .connection-notice, .edit-conflict { padding: 10px; border: 1px solid var(--modified); background: var(--bg-subtle); }
 .edit-conflict { border-radius: 6px; margin: 6px 0; }
 .edit-conflict p { margin: 0 0 8px; }
+
+.recovery-panel { margin: 12px 16px; padding: 12px; border: 1px solid var(--modified);
+                  border-radius: 8px; max-height: 55vh; overflow: auto; }
+.recovery-panel h2 { font-size: 16px; margin: 0 0 6px; }
+.recovery-panel h3 { font-size: 14px; margin: 0 0 6px; }
+.recovery-entry { border-top: 1px solid var(--border); padding: 10px 0; }
+.recovery-entry details { margin-bottom: 8px; }
+.recovery-entry label { display: block; margin: 8px 0; }
+.recovery-entry textarea { display: block; width: 100%; min-height: 90px; resize: vertical;
+  color: var(--fg); background: var(--bg); border: 1px solid var(--border); font: 12.5px ui-monospace, monospace; }

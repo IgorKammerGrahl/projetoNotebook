@@ -4,8 +4,8 @@ import { fileURLToPath } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 
-export function startServer(path, { env = {} } = {}) {
-  const child = spawn("python", ["-m", "kernel", "serve", path, "--port", "0"], {
+export function startServer(path, { env = {}, port = 0 } = {}) {
+  const child = spawn("python", ["-m", "kernel", "serve", path, "--port", String(port)], {
     cwd: root, env: { ...process.env, ...env }, detached: true, stdio: ["ignore", "pipe", "pipe"],
   });
   let log = "";
@@ -24,6 +24,11 @@ export function startServer(path, { env = {} } = {}) {
   return {
     url,
     log: () => log,
+    async kill() {
+      if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
+      process.kill(-child.pid, "SIGKILL"); // isolated test server and its kernel; no final autosave
+      await exited;
+    },
     async stop() {
       if (!child.pid || child.exitCode !== null || child.signalCode !== null) return;
       child.kill("SIGINT");
