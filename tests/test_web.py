@@ -4,7 +4,7 @@ import asyncio
 import aiohttp
 import pytest
 
-from kernel.fmt import parse
+from kernel.fmt import Cell, parse
 from kernel.web import NotebookServer
 
 NB = "# t\n\n```python\na = 20\n```\n\n```python\nb = a + 1\n```\n"
@@ -436,3 +436,50 @@ async def test_edit_of_running_cell_publishes_accepted_source_before_completion(
     await ws.send_json({"type": "stop"})
     await cell_status(ws, cid, "interrupted")
     await ws.close()
+
+
+def test_markdown_boundaries_survive_autosave_and_a_fresh_server(tmp_path):
+    async def main():
+        path = tmp_path / "roundtrip.nb.md"
+        path.write_text("```python\nsafe = 1\n```\n")
+        expected = [Cell("python", "safe = 1"),
+                    Cell("markdown", "# Primeira"),
+                    Cell("markdown", "\n```python\nraise RuntimeError('only an example')\n```\n<!-- === -->\n"),
+                    Cell("markdown", ""), Cell("markdown", ""),
+                    Cell("html", "<b>fim</b>")]
+        server = NotebookServer(path)
+        await server.start()
+        try:
+            await server.session.idle()
+            async with aiohttp.ClientSession() as http:
+                ws = await http.ws_connect(ws_url(server), headers=good(server))
+                await ws.receive_json()
+                for cell in expected[1:]:
+                    await ws.send_json({"type": "add", "kind": cell.kind, "code": cell.code})
+                    await recv_until(ws, lambda m: m["type"] == "added")
+
+                async def autosaved():
+                    while parse(path.read_text()) != expected:
+                        await asyncio.sleep(0.025)
+
+                # close() also saves: check disk while the original server is alive.
+                await asyncio.wait_for(autosaved(), timeout=5)
+                await ws.close()
+        finally:
+            await server.close()
+
+        reopened = NotebookServer(path)
+        await reopened.start()
+        try:
+            await reopened.session.idle()
+            async with aiohttp.ClientSession() as http:
+                ws = await http.ws_connect(ws_url(reopened), headers=good(reopened))
+                snapshot = await ws.receive_json()
+                assert [Cell(c["kind"], c["code"]) for c in snapshot["cells"]] == expected
+                assert snapshot["cells"][0]["status"] == "ok"
+                assert snapshot["kernel"]["event"] is None
+                await ws.close()
+        finally:
+            await reopened.close()
+
+    asyncio.run(main())

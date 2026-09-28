@@ -15,6 +15,7 @@ export interface Handlers {
   onMessage: (m: ServerMsg) => void;
   onStatus: (connected: boolean) => void;
   onNotice?: (text: string) => void;
+  onPendingChanges?: (pending: boolean) => void;
 }
 interface Pending { msg: ClientMsg; queuedAt: number }
 const browserDeps: Deps = {
@@ -42,11 +43,23 @@ export class Connection {
       this.pending = this.pending.filter((p) => !(p.msg.type === "edit" && p.msg.cid === msg.cid));
     }
     this.pending.push({ msg, queuedAt });
+    this.reportPendingChanges();
     this.flush(); // OPEN, not a possibly stale React connected flag, controls delivery
   }
 
   discardEdits(cid: number) {
     this.pending = this.pending.filter((p) => p.msg.type !== "edit" || p.msg.cid !== cid);
+    this.reportPendingChanges();
+  }
+
+  discardAddition(request: string) {
+    this.pending = this.pending.filter((p) => p.msg.type !== "add" || p.msg.request !== request);
+    this.reportPendingChanges();
+  }
+
+  private reportPendingChanges() {
+    const changesFile = (p: Pending) => p.msg.type === "edit" || p.msg.type === "add" || p.msg.type === "delete";
+    this.h.onPendingChanges?.(this.pending.some(changesFile) || [...this.awaiting.values()].some(changesFile));
   }
 
   close() {
@@ -71,6 +84,7 @@ export class Connection {
       this.awaiting.clear();
     }
     this.h.onStatus(false);
+    this.reportPendingChanges();
     sock.close();
     this.retry = this.d.setTimeout(() => this.connect(), (this.delay = Math.min(this.delay * 2, 5000)));
   }
@@ -104,6 +118,7 @@ export class Connection {
         this.d.clearTimeout(this.watchdog);
         this.watchdog = null;
         this.armWatchdog();
+        this.reportPendingChanges();
       }
       if (m.type === "error") this.h.onNotice?.(m.error);
       if (m.type === "conflict" && !m.cell) this.h.onNotice?.("A célula editada foi removida no servidor; a edição não foi aplicada.");

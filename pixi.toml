@@ -10,6 +10,8 @@ test = "python -m pytest -q"
 frontend-install = "npm --prefix frontend ci"
 frontend-build = "npm --prefix frontend run build"
 frontend-test = "npm --prefix frontend test"
+frontend-e2e-install = "npm --prefix frontend run test:e2e:install"
+frontend-e2e = { cmd = "npm --prefix frontend run test:e2e", depends-on = ["frontend-build"] }
 
 [dependencies]
 mojo = ">=1.1.0,<2"

@@ -1,5 +1,5 @@
 // Notebook state as the server reports it. Pure reducer (tested).
-import type { CellJson, KernelState, ServerMsg } from "./protocol";
+import type { CellJson, DocumentIdentity, KernelState, SaveState, ServerMsg } from "./protocol";
 
 export interface NotebookState {
   cells: Record<number, CellJson>;
@@ -7,11 +7,13 @@ export interface NotebookState {
   edges: [number, number][];
   kernel: KernelState;
   connected: boolean;
+  save: SaveState | null;
+  document?: DocumentIdentity;
   conflicts: Record<number, string | undefined>;
 }
 
 export const empty: NotebookState = {
-  cells: {}, order: [], edges: [], kernel: { restarts: 0, dead: false }, connected: false, conflicts: {},
+  cells: {}, order: [], edges: [], kernel: { restarts: 0, dead: false }, connected: false, save: null, conflicts: {},
 };
 
 export function reduce(state: NotebookState, msg: ServerMsg): NotebookState {
@@ -23,14 +25,18 @@ export function reduce(state: NotebookState, msg: ServerMsg): NotebookState {
         edges: msg.edges,
         kernel: msg.kernel,
         connected: true,
-        conflicts: state.conflicts,
+        save: msg.save ?? null,
+        document: msg.document,
+        conflicts: msg.document?.session === state.document?.session ? state.conflicts : {},
       };
     case "update": {
       const cells = { ...state.cells };
       for (const c of msg.cells) cells[c.id] = c;
       for (const id of Object.keys(cells).map(Number)) if (!msg.order.includes(id)) delete cells[id];
-      return { ...state, cells, order: msg.order, edges: msg.edges, kernel: msg.kernel };
+      return { ...state, cells, order: msg.order, edges: msg.edges, kernel: msg.kernel, save: msg.save ?? null };
     }
+    case "save_status":
+      return { ...state, save: msg.save };
     case "conflict":
       return { ...state, cells: msg.cell ? { ...state.cells, [msg.cid]: msg.cell } : state.cells,
         conflicts: { ...state.conflicts, [msg.cid]: msg.request } };
