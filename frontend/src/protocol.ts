@@ -44,10 +44,13 @@ export interface KernelState {
 }
 
 export interface SaveState {
-  status: "saving" | "saved" | "error";
+  status: "saving" | "saved" | "error" | "conflict";
   revision: number;
   saved_revision: number;
   error: string | null;
+  conflict?: { message: string; preserved: string | null };
+  copy?: { revision: number; path: string } | null;
+  reload?: string | null;
 }
 
 export interface DocumentIdentity { id: string; name: string; session: string }
@@ -58,6 +61,7 @@ export type ServerMsg =
   | { type: "save_status"; save: SaveState }
   | { type: "added"; cid: number; request?: string }
   | { type: "ack"; seq: number }
+  | { type: "notice"; text: string }
   | { type: "conflict"; cid: number; cell: CellJson | null; request?: string; seq?: number }
   | { type: "error"; error: string; seq?: number };
 
@@ -68,4 +72,6 @@ export type ClientMsg =
   | { type: "add"; code: string; kind: Kind; after: number | null; request?: string }
   | { type: "delete"; cid: number }
   | { type: "stop" }
-  | { type: "retry_save" };
+  | { type: "retry_save" }
+  | { type: "preserve_copy" | "reload_external"; revision: number; session: string }
+  | { type: "reload_ready"; request: string; ready: boolean };

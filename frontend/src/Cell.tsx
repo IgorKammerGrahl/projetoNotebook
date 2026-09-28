@@ -17,7 +17,7 @@ interface Props {
   onRun: (queuedAt: number) => void;
   onCancelEdits: () => void;
   onNotice: (text: string) => void;
-  onBusy: (id: number, busy: boolean) => void;
+  onBusy: (id: number, busy: boolean, check?: () => boolean) => void;
   rejected?: string;
   restore?: { id: string; entryId: string; code: string; version: string; expectedCode: string };
   onRestoreRejected: (entryId: string, code: string) => void;
@@ -65,7 +65,7 @@ export function Cell({ cell, all, edges, elapsed, onEdit, onRun, onDelete, onAdd
     refresh((n) => n + 1);
   }, [restore, draft]);
   const busy = draft.busy;
-  useLayoutEffect(() => { onBusy(cell.id, busy); }, [cell.id, busy, onBusy]);
+  useLayoutEffect(() => { onBusy(cell.id, busy, () => draft.busy); }, [cell.id, busy, onBusy, draft]);
   useLayoutEffect(() => () => onBusy(cell.id, false), [cell.id, onBusy]);
   const run = () => update(() => draft.requestRun());
 

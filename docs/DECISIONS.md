@@ -864,8 +864,8 @@ fonte, inclusão, exclusão ou ordem; resultados de execução não a alteram.
 
 **Limites à época:** rascunhos persistidos ficaram para D-021, implementada
 abaixo. O controle de revisão cobre clientes do mesmo
-servidor; modificações externas do arquivo e múltiplos servidores no mesmo
-arquivo não são coordenados.
+servidor. D-022 acrescenta bloqueio entre servidores e detecção de alterações
+externas, com os limites descritos abaixo.
 
 **Verificação:** `tests/test_persistence.py`, `frontend/src/saving.test.ts`,
 `frontend/src/connection.test.ts` e `frontend/e2e/save-reopen.spec.js`.
@@ -942,10 +942,90 @@ ordenação e comandos offline não ganham um diário persistente. O navegador
 isola o armazenamento por perfil/origem; mudar host, porta, perfil ou caminho
 do arquivo não migra rascunhos. Limpar dados do site os remove. Uma transação ainda
 em andamento não oferece a confirmação de proteção local; não há promessa de
-preservar teclas ainda não confirmadas numa queda do navegador/sistema. Alterações externas
-do arquivo enquanto o servidor continua aberto e múltiplos servidores no mesmo
-arquivo permanecem fora da coordenação de D-020.
+preservar teclas ainda não confirmadas numa queda do navegador/sistema. D-022
+acrescenta proteção para alterações externas e múltiplos servidores no arquivo.
 
 **Verificação:** `tests/test_format.py`, `tests/test_recovery.py`,
 `frontend/src/recovery.test.ts`, `frontend/src/connection.test.ts` e
 `frontend/e2e/recovery.spec.js`, além das regressões de salvamento e conflitos.
+
+## D-022 — Escritor único e conflitos no arquivo (2026-09-28)
+
+**Problema:** uma substituição atômica confirma uma gravação inteira, mas não
+verifica se outro escritor mudou o destino. O autosave podia apagar uma edição
+externa ou disputar o arquivo com outro servidor.
+
+**Bloqueio:** `NotebookFile` resolve o caminho e adquire `flock(LOCK_EX | LOCK_NB)`
+no sidecar `.nome.lock`, antes de ler o notebook, abrir HTTP ou iniciar o kernel.
+O descritor não é herdável e permanece aberto até o encerramento de todos os
+trabalhos de gravação/resolução. Falha de inicialização também o fecha. O sidecar
+nunca é apagado pelo servidor: remover e recriar o nome permitiria dois inodes
+com bloqueios independentes. A posse é conferida antes de gravar; remoção ou
+substituição do sidecar suspende a escrita. O sistema libera o bloqueio após
+SIGKILL; não se usa PID persistido como prova de posse. Aliases por symlink
+convergem no caminho resolvido; hard links são recusados.
+
+**Gravação verificada:**
+- A leitura captura conteúdo/hash, dispositivo, inode, mtime e permissões. Ela
+  rejeita arquivo não regular, link simbólico novo ou mudança durante a leitura.
+  Ausência é uma versão distinta. Comparações antecedem a preparação e a troca.
+- Para arquivo existente, `renameat2(RENAME_EXCHANGE)` troca o candidato pelo
+  destino e conserva o inode realmente deslocado. Ele e o destino são novamente
+  verificados antes e depois do fsync do diretório. Uma corrida detectada conserva
+  o deslocado em `.nome.<único>.previous.nb.md`, entra em conflito e informa o
+  caminho. O destino pode já conter a versão local; não se faz rollback cego que
+  poderia sobrescrever uma terceira gravação. Para arquivo novo, `RENAME_NOREPLACE`
+  impede substituir uma criação concorrente. Ausência dessas operações gera erro,
+  sem fallback para `os.replace`.
+- Só uma tarefa grava. O loop WebSocket continua despachando parar/editar; I/O
+  de salvamento, cópia e leitura externa ocorre fora do loop. Falha de fsync após
+  troca mantém a identidade instalada, sem confirmar a revisão; uma nova tentativa
+  não confunde nossa própria gravação com uma edição externa.
+- `save.status = conflict` é persistente no snapshot e tem prioridade sobre
+  alterações pendentes. Edições continuam aceitas em memória e protegidas no
+  navegador, mas retry, debounce e encerramento não substituem o arquivo enquanto
+  o conflito existir. Fechar com alterações não gravadas ainda informa falha.
+
+**Resolução explícita:**
+- “Preservar cópia da sessão” grava um notebook completo com criação exclusiva,
+  fsync do arquivo e do diretório, no mesmo diretório. O servidor gera o nome;
+  o cliente não fornece um caminho. A cópia é vinculada à revisão capturada
+  junto com a fonte; edições posteriores exigem outra cópia.
+- “Carregar versão externa” exige essa cópia atual. A revisão do pedido é
+  validada ao despachar, ao iniciar a tarefa e depois da barreira das abas.
+  Atrasar a tarefa não permite adotar silenciosamente uma revisão mais recente.
+- Todas as conexões recebem um identificador de preparação. A interface aplica
+  `inert` antes de consultar diretamente os Drafts e o transporte; só confirma
+  se não há texto pendente, conflito de célula ou mutação aguardando ACK. Recusa,
+  timeout de 8 s, edição concorrente ou mudança das conexões cancela a resolução.
+  Desconectar durante a barreira não libera a edição local antes do novo snapshot.
+- A versão externa precisa existir e ser válida. Um kernel substituto é iniciado
+  antes de abandonar a sessão atual; suas células são adicionadas sem `run_all`.
+  Arquivo, bloqueio e cópia são revalidados após a preparação. A última validação
+  da cópia e a publicação da troca não têm await intermediário. Depois se encerra
+  o kernel anterior. Fonte e UIDs vêm do arquivo; a época muda e invalida versões
+  antigas. A cópia preservada é indicada também após o sucesso.
+- Comandos do navegador levam a época em que foram pedidos. Comandos antigos de
+  execução/inclusão/exclusão não podem atingir IDs numéricos reutilizados após
+  recarregar; edições continuam protegidas por base_version. Comandos de resolução
+  não entram na fila offline nem são repetidos após perda de ACK.
+
+**Escopo e limites:** Linux com filesystem local que implemente as operações
+acima. `flock` coordena servidores participantes, não programas que o ignoram.
+Não há monitoramento contínuo do arquivo ocioso: a detecção ocorre ao salvar e
+resolver. A leitura/troca verificada cobre conflitos observados, inclusive escrita
+no inode deslocado durante fsync, mas não uma escrita arbitrariamente tardia via
+descritor antigo após a última checagem e remoção da cópia temporária. Não se
+promete edição externa simultânea sem risco; para isso, encerre o servidor antes
+de usar outro editor. Também não se promete preservar uma cópia apagada/alterada
+externamente após a confirmação. Não há histórico ilimitado de cada autosave.
+Arquivos de recuperação deixados por conflito, crash ou falha de I/O não são
+limpos automaticamente; o usuário deve conferi-los antes de remover. Os limites
+de durabilidade física do filesystem e do dispositivo continuam valendo.
+
+**Referências:** semântica de [flock](https://man7.org/linux/man-pages/man2/flock.2.html)
+e de [renameat2](https://man7.org/linux/man-pages/man2/rename.2.html).
+
+**Verificação:** `tests/test_file_conflicts.py`, regressões de persistência,
+`frontend/src/saving.test.ts`, `frontend/src/connection.test.ts` e
+`frontend/e2e/file-conflicts.spec.js` com processos reais.

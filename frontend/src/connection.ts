@@ -17,7 +17,7 @@ export interface Handlers {
   onNotice?: (text: string) => void;
   onPendingChanges?: (pending: boolean) => void;
 }
-interface Pending { msg: ClientMsg; queuedAt: number }
+interface Pending { msg: ClientMsg; queuedAt: number; session?: string }
 const browserDeps: Deps = {
   WS: WebSocket, now: () => Date.now(),
   setTimeout: (fn, ms) => setTimeout(fn, ms), clearTimeout: (t) => clearTimeout(t as number),
@@ -32,6 +32,7 @@ export class Connection {
   private closed = false;
   private retry: unknown = null;
   private watchdog: unknown = null;
+  private session?: string;
 
   constructor(private url: string, private h: Handlers, private d: Deps = browserDeps) {
     this.connect();
@@ -39,10 +40,14 @@ export class Connection {
 
   send(msg: ClientMsg, queuedAt = this.d.now()) {
     if (this.closed) return;
+    if (["preserve_copy", "reload_external", "reload_ready"].includes(msg.type) && this.sock?.readyState !== 1) {
+      this.h.onNotice?.("Aguarde reconectar para resolver o conflito do arquivo.");
+      return; // an explicit resolution must never become an offline command
+    }
     if (msg.type === "edit") {
       this.pending = this.pending.filter((p) => !(p.msg.type === "edit" && p.msg.cid === msg.cid));
     }
-    this.pending.push({ msg, queuedAt });
+    this.pending.push({ msg, queuedAt, session: "session" in msg ? msg.session : this.session });
     this.reportPendingChanges();
     this.flush(); // OPEN, not a possibly stale React connected flag, controls delivery
   }
@@ -57,9 +62,13 @@ export class Connection {
     this.reportPendingChanges();
   }
 
-  private reportPendingChanges() {
+  get hasPendingChanges() {
     const changesFile = (p: Pending) => p.msg.type === "edit" || p.msg.type === "add" || p.msg.type === "delete";
-    this.h.onPendingChanges?.(this.pending.some(changesFile) || [...this.awaiting.values()].some(changesFile));
+    return this.pending.some(changesFile) || [...this.awaiting.values()].some(changesFile);
+  }
+
+  private reportPendingChanges() {
+    this.h.onPendingChanges?.(this.hasPendingChanges);
   }
 
   close() {
@@ -113,6 +122,8 @@ export class Connection {
     sock.onmessage = (e: MessageEvent) => {
       if (this.closed || this.sock !== sock) return;
       const m = JSON.parse(e.data) as ServerMsg;
+      if (m.type === "snapshot") this.session = m.document?.session;
+      if (m.type === "notice") this.h.onNotice?.(m.text);
       if (m.type === "ack" || ((m.type === "error" || m.type === "conflict") && m.seq !== undefined)) {
         this.awaiting.delete(m.seq!);
         this.d.clearTimeout(this.watchdog);
@@ -137,7 +148,7 @@ export class Connection {
       }
       const seq = ++this.seq;
       try {
-        this.sock.send(JSON.stringify({ ...p.msg, seq }));
+        this.sock.send(JSON.stringify({ ...p.msg, session: p.session, seq }));
       } catch {
         this.reconnect(this.sock);
         return; // send threw: keep this unsent message queued

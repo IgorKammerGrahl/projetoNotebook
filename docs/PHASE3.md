@@ -432,3 +432,54 @@ arquivo ou trocar host/porta não migra rascunhos. Dados do site apagados remove
 as cópias. A proteção vale após a confirmação local da transação e cobre fonte,
 não um histórico de inclusões/exclusões/ordenação. Edições externas com o servidor
 aberto e múltiplos servidores no mesmo arquivo continuam sem coordenação.
+
+## Após a v0.1.0 — proteção do arquivo e resolução de conflitos (D-022)
+
+Bloco iniciado em `66eb834`, após o merge da recuperação de rascunhos.
+
+- Bloqueio exclusivo por caminho resolvido antes da leitura/inicialização.
+  Segunda instância é recusada com mensagem na CLI; symlinks de entrada usam
+  o mesmo bloqueio. SIGKILL libera a posse sem apagar/recriar o sidecar.
+- Gravação verifica a versão do arquivo antes e depois da troca atômica. Mudança,
+  remoção ou identidade inválida gera conflito persistente e suspende autosave,
+  retry e escrita de encerramento. Corrida na substituição preserva o inode
+  deslocado e informa seu caminho; criação concorrente não é sobrescrita.
+- A interface permite preservar uma cópia durável da revisão atual e então
+  carregar o arquivo externo. O carregamento exige que todas as abas estejam
+  sem alterações pendentes e reinicia a sessão sem executar as células.
+  Cópia obsoleta, alterada, ausente ou não confirmada bloqueia o carregamento.
+  Pedidos antigos de execução não podem atingir IDs reutilizados na nova sessão.
+
+**Achados da revisão e regressões:**
+- Escrita por um descritor do inode deslocado durante fsync exigiu uma segunda
+  verificação após sincronizar o diretório. A versão escrita é preservada e o
+  servidor entra em conflito, em vez de confirmar o salvamento.
+- Alteração da cópia durante a inicialização do kernel substituto exigiu nova
+  validação antes da troca da sessão. A sessão anterior permanece utilizável
+  quando essa validação falha.
+- Uma edição já bufferizada entre o despacho do pedido e o início da tarefa
+  podia tornar a cópia obsoleta. O pedido agora carrega a revisão capturada no
+  despacho; não se adota a revisão nova ao começar a tarefa.
+- O teste antigo de versão de outra instância abria dois servidores no mesmo
+  arquivo ao mesmo tempo. Agora encerra o primeiro antes de abrir o segundo e
+  conserva a asserção de recusa da versão anterior.
+
+**Validação:**
+- **236 testes backend aprovados**, incluindo 19 novos casos de bloqueio,
+  concorrência, falhas, cópia e recarregamento pelo servidor real.
+- **61 testes frontend aprovados**, incluindo distinção do conflito de arquivo,
+  ausência de replay offline da resolução e época de comandos enfileirados.
+- **17 testes Chromium aprovados**, sem retries. Os três novos casos cobrem
+  cópia/recarregamento sem executar, aba com conflito pendente, falha real de
+  permissão e invalidação da cópia após nova edição. Os três foram repetidos e
+  aprovados após as correções finais no servidor. A captura da interface foi
+  inspecionada.
+- Build TypeScript + Vite aprovado; aviso preexistente de bundle acima de 500 kB.
+  Nenhuma dependência nova.
+
+**Limite explícito:** bloqueio entre servidores participantes e detecção de
+conflitos observados em filesystem local Linux. Não há coordenação universal
+com editores externos: escrita arbitrariamente tardia por um descritor antigo,
+após a checagem final, continua fora da garantia (DEBT-015). Para editar
+externamente sem essa disputa, encerre o servidor. Não há monitoramento contínuo
+do arquivo ocioso nem limpeza automática das cópias preservadas.

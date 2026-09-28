@@ -12,6 +12,7 @@ import aiohttp
 import pytest
 
 import kernel.web as web_module
+import kernel.storage as storage_module
 from kernel.fmt import Cell, parse
 from kernel.web import NotebookServer
 
@@ -120,9 +121,9 @@ def test_disk_failures_are_visible_and_retry_preserves_the_accepted_edit(tmp_pat
                     raise OSError(number, os.strerror(number))
 
                 if stage == "create":
-                    fault.setattr(web_module.tempfile, "NamedTemporaryFile", fail)
+                    fault.setattr(storage_module.tempfile, "NamedTemporaryFile", fail)
                 elif stage == "replace":
-                    fault.setattr(Path, "replace", fail)
+                    fault.setattr(storage_module, "_rename", fail)
                 else:
                     real_sync = os.fsync
 
@@ -132,7 +133,7 @@ def test_disk_failures_are_visible_and_retry_preserves_the_accepted_edit(tmp_pat
                             fail()
                         real_sync(fd)
 
-                    fault.setattr(web_module.os, "fsync", sync)
+                    fault.setattr(storage_module.os, "fsync", sync)
                 await edit(ws, server, cid, "Preserve me")
                 failed = await save_status(ws, "error")  # actual debounce, without manual save
                 assert failed["revision"] == 1 and failed["saved_revision"] == 0
