@@ -90,7 +90,10 @@ def main():
         logging.basicConfig(level=logging.DEBUG if args.verbose else logging.WARNING,
                             format="%(asctime)s %(name)s %(levelname)s %(message)s")
         with contextlib.suppress(KeyboardInterrupt):
-            asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce))
+            try:
+                asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce))
+            except (OSError, ValueError) as exc:
+                ap.exit(1, f"kernel: {exc}\n")
         return
     sys.exit(run(args.path))
 

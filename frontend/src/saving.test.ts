@@ -8,6 +8,15 @@ const writing: SaveState = { status: "saving", revision: 4, saved_revision: 3, e
 const failed: SaveState = { ...writing, status: "error", error: "Sem espaço em disco." };
 
 describe("saving status", () => {
+  it("keeps external file conflicts distinct from retryable disk errors", () => {
+    const conflict: SaveState = { ...writing, status: "conflict", conflict: {
+      message: "Arquivo alterado externamente.", preserved: null,
+    } };
+    expect(savingStatus(conflict, true, true)).toMatchObject({ text: "conflito no arquivo", error: true, retry: false });
+    expect(savingStatus({ ...conflict, reload: "r1" }, true, false).text).toBe("carregando versão externa…");
+    expect(savingStatus(conflict, false, false).text).toBe("salvamento não confirmado");
+    expect(reduce(reduce(empty, { type: "save_status", save: conflict }), { type: "ack", seq: 9 }).save).toEqual(conflict);
+  });
   it("requires a disk confirmation for the current revision", () => {
     expect(savingStatus(saved, true, false).text).toBe("salvo");
     expect(savingStatus(writing, true, false).text).toBe("salvando…");

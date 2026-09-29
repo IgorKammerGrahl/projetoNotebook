@@ -30,6 +30,38 @@ beforeEach(() => { vi.useFakeTimers(); Socket.all = []; });
 afterEach(() => { vi.useRealTimers(); });
 
 describe("connection lifecycle", () => {
+  it("never queues file resolution commands offline or replays them after a lost ACK", () => {
+    const { c, socket, onNotice } = setup();
+    c.send({ type: "reload_external", revision: 1, session: "first" });
+    c.send({ type: "preserve_copy", revision: 1, session: "first" });
+    c.send({ type: "reload_ready", request: "r1", ready: true });
+    socket.open();
+    expect(socket.sent).toEqual([]);
+    expect(onNotice).toHaveBeenCalledTimes(3);
+    c.send({ type: "preserve_copy", revision: 1, session: "first" });
+    socket.disconnect();
+    vi.advanceTimersByTime(500);
+    const replacement = Socket.all[1];
+    replacement.open();
+    expect(replacement.sent).toEqual([]);
+    c.close();
+  });
+
+  it("retains the originating session of queued commands across a reload", () => {
+    const { c, socket } = setup();
+    socket.open();
+    socket.receive({ type: "snapshot", document: { session: "first" } });
+    socket.disconnect();
+    c.send({ type: "run", cid: 1 });
+    vi.advanceTimersByTime(500);
+    const replacement = Socket.all[1];
+    replacement.receive({ type: "snapshot", document: { session: "second" } });
+    replacement.open();
+    expect(replacement.sent[0]).toMatchObject({ type: "run", session: "first" });
+    c.send({ type: "stop" });
+    expect(replacement.sent[1]).toMatchObject({ type: "stop", session: "second" });
+    c.close();
+  });
   it("cancels an unsent recovery addition before reconnection without discarding other work", () => {
     const { c, socket } = setup();
     c.send({ type: "add", kind: "python", code: "recovered", after: null, request: "recovery" });

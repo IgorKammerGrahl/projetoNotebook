@@ -33,7 +33,7 @@ export function App() {
     const text = announcements.current.receive(m);
     if (text) setAnnouncement((prev) => ({ text, serial: prev.serial + 1 }));
   };
-  const { state, send, discardEdits, discardAddition, pendingChanges, notice, setNotice, clearNotice } = useNotebook(onMessage);
+  const { state, send, discardEdits, discardAddition, pendingChanges, hasPendingChanges, notice, setNotice, clearNotice } = useNotebook(onMessage);
   const { cells, order, edges, kernel, connected } = state;
   useEffect(() => {
     if (connected && !additionFailed) return;
@@ -83,13 +83,28 @@ export function App() {
   const [showGraph, setShowGraph] = useState(true);
   const run = (id: number, at: number) => { announcements.current.userRuns.add(id); send({ type: "run", cid: id }, at); };
   const [busyEditors, setBusyEditors] = useState(new Set<number>());
-  const onBusy = useCallback((id: number, busy: boolean) => setBusyEditors((prev) => {
-    if (prev.has(id) === busy) return prev;
-    const next = new Set(prev);
-    if (busy) next.add(id); else next.delete(id);
-    return next;
-  }), []);
+  const busyChecks = useRef(new Map<number, () => boolean>());
+  const onBusy = useCallback((id: number, busy: boolean, check?: () => boolean) => {
+    if (check) busyChecks.current.set(id, check); else busyChecks.current.delete(id);
+    setBusyEditors((prev) => {
+      if (prev.has(id) === busy) return prev;
+      const next = new Set(prev);
+      if (busy) next.add(id); else next.delete(id);
+      return next;
+    });
+  }, []);
   const saving = savingStatus(state.save, connected, pendingChanges || busyEditors.size > 0);
+  const reload = state.save?.reload;
+  const readinessSent = useRef<string | null>(null);
+  useEffect(() => {
+    if (!reload) { readinessSent.current = null; return; }
+    if (!connected || readinessSent.current === reload) return;
+    readinessSent.current = reload;
+    // After React applies inert, inspect actual drafts/transport, not a delayed UI flag.
+    send({ type: "reload_ready", request: reload,
+      ready: !hasPendingChanges() && ![...busyChecks.current.values()].some((check) => check()) });
+  }, [reload, connected, hasPendingChanges, send]);
+  const resolutionDisabled = !connected || !!reload || pendingChanges || busyEditors.size > 0;
 
   return (
     <div className="app">
@@ -102,9 +117,9 @@ export function App() {
         {kernel.dead && <span className="chip tone-error"><Skull size={14} aria-hidden="true" /> kernel morto</span>}
         {kernel.restarts > 0 && <span className="muted">reinícios do kernel: {kernel.restarts}</span>}
         <span className="spacer" />
-        <button onClick={() => send({ type: "run_all" })} disabled={busyEditors.size > 0}
+        <button onClick={() => send({ type: "run_all" })} disabled={!!reload || busyEditors.size > 0}
                 title={busyEditors.size ? "Aguarde as edições pendentes e resolva os conflitos" : undefined}><Play size={15} aria-hidden="true" /> rodar tudo</button>
-        <button onClick={() => send({ type: "stop" })} disabled={!running} className="stop"
+        <button onClick={() => send({ type: "stop" })} disabled={!!reload || !running} className="stop"
                 title="Mata o kernel; a célula em execução fica interrompida e o resto é reexecutado">
           <Square size={15} aria-hidden="true" /> parar
         </button>
@@ -116,9 +131,22 @@ export function App() {
         <span>{saving.detail}</span>{" "}
         <button onClick={() => send({ type: "retry_save" })}>tentar salvar novamente</button>
       </div>}
+      {state.save?.status === "conflict" && <section className="connection-notice" aria-label="conflito no arquivo">
+        <p role="alert">{saving.detail} Suas edições continuam nesta sessão. O autosave está suspenso.</p>
+        {state.save.conflict?.preserved && <p>Versão deslocada preservada em: <code>{state.save.conflict.preserved}</code></p>}
+        {state.save.copy && <p>Cópia da sessão: <code>{state.save.copy.path}</code>
+          {state.save.copy.revision !== state.save.revision && " (há edições mais recentes; preserve outra cópia)"}</p>}
+        <p>Primeiro preserve uma cópia. Depois carregue o arquivo externo, sem executar suas células.
+          Todas as abas abertas precisam estar sem edições pendentes.</p>
+        <button disabled={resolutionDisabled} onClick={() => send({ type: "preserve_copy",
+          revision: state.save!.revision, session: state.document!.session })}>preservar cópia da sessão</button>{" "}
+        <button disabled={resolutionDisabled || state.save.copy?.revision !== state.save.revision}
+          onClick={() => send({ type: "reload_external", revision: state.save!.revision,
+            session: state.document!.session })}>carregar versão externa</button>
+      </section>}
       {notice && <div role="status" className="connection-notice">{notice} <button onClick={clearNotice}>fechar aviso</button></div>}
       {recovery.warning && <p role="alert" className="connection-notice">{recovery.warning}</p>}
-      <RecoveryPanel entries={recovery.entries} cells={Object.values(cells)} connected={connected}
+      <div inert={!!reload}><RecoveryPanel entries={recovery.entries} cells={Object.values(cells)} connected={connected}
         blocked={(cell) => busyEditors.has(cell.id) || recovery.hasOwn(cell.uid)} creating={creating}
         onDiscard={(entry) => recovery.discard(entry)}
         onRecover={async (entry, cell) => {
@@ -131,8 +159,8 @@ export function App() {
           adding.current.set(request, entry);
           setCreating((prev) => new Set(prev).add(entry.id));
           send({ type: "add", code: entry.code, kind: entry.kind, after: order.at(-1) ?? null, request });
-        }} />
-      <div className="body">
+        }} /></div>
+      <div className="body" inert={!!reload}>
         <main className="cells">
           {order.length === 0 && connected && (
             <button onClick={() => send({ type: "add", code: "", kind: "python", after: null })}>+ primeira célula</button>

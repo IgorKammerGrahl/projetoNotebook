@@ -22,7 +22,8 @@ def with_server(fn):
                 async with aiohttp.ClientSession() as http:
                     await fn(srv, http, path)
             finally:
-                await srv.close()
+                if not srv._closing:
+                    await srv.close()
         asyncio.run(main())
     wrapper.__name__ = fn.__name__
     return wrapper
@@ -375,6 +376,7 @@ async def test_edit_requires_a_version_and_retry_does_not_create_another_revisio
 @with_server
 async def test_version_from_another_server_lifetime_is_rejected(srv, http, path):
     old = srv._cell_json(2)
+    await srv.close()  # genuinely another lifetime: concurrent writers are now refused
     other = NotebookServer(path)
     await other.start()
     try:

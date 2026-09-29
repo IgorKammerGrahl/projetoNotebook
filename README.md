@@ -45,6 +45,28 @@ são origens diferentes). Limpar os dados do site remove os rascunhos. Se o
 armazenamento local falhar ou ficar cheio, a interface avisa: mantenha a aba
 aberta até salvar no arquivo ou copie o código.
 
+**Conflitos no arquivo:** apenas um servidor pode abrir o mesmo notebook para
+escrita. O bloqueio é liberado quando o processo termina, inclusive após uma
+queda; o arquivo oculto `.nome-do-notebook.lock` permanece e não deve ser apagado
+manualmente enquanto o servidor está aberto.
+
+Se outro programa alterar ou remover o notebook, a próxima tentativa de salvar
+mostra **“conflito no arquivo”** e suspende o autosave. Use **“preservar cópia da
+sessão”** para gravar o conteúdo aceito pelo servidor em outro arquivo, cujo
+caminho aparece na interface. Depois, **“carregar versão externa”** reinicia o
+kernel com o conteúdo do arquivo, sem executar as células. Todas as abas abertas
+precisam estar sem edições pendentes; qualquer nova edição exige atualizar a
+cópia. Se ocorrer uma corrida durante a substituição, o aviso também informa
+onde a versão deslocada foi preservada. Confira os arquivos antes de removê-los.
+
+A proteção de arquivo é destinada a Linux com sistema de arquivos local e
+suporte a `renameat2`; não há fallback para uma substituição sem verificação.
+Ela detecta alterações externas, mas não coordena editores que ignoram o
+bloqueio: uma escrita arbitrariamente tardia por um descritor do arquivo antigo,
+após a última verificação, ainda pode escapar. Para edição externa simultânea
+sem esse risco, encerre o servidor antes de usar outro editor. Hard links não
+são aceitos; links simbólicos de entrada são resolvidos para seu destino.
+
 Opções úteis de `serve`:
 - `--port`;
 - `--verbose`: registra conexões e mensagens recebidas;
@@ -83,7 +105,9 @@ Cobrem:
   e anúncio único do incidente na região acessível;
 - recuperação de rascunhos após encerrar navegador e servidor, incluindo
   interrupção forçada dos processos, conflitos após edição externa e células
-  removidas, sem repetir execuções pendentes.
+  removidas, sem repetir execuções pendentes;
+- conflito de arquivo externo, cópia da sessão, recarregamento sem execução e
+  recusa de recarregamento enquanto outra aba possui edições pendentes.
 
 Em caso de falha, capturam imagem, trace e logs em `frontend/test-results/`.
 

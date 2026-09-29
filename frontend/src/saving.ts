@@ -4,6 +4,8 @@ import type { SaveState } from "./protocol";
 export function savingStatus(save: SaveState | null, connected: boolean, localChanges: boolean) {
   if (!connected) return { text: "salvamento não confirmado", error: false,
     detail: "Aguarde a reconexão para confirmar o salvamento.", retry: false };
+  if (save?.status === "conflict") return { text: save.reload ? "carregando versão externa…" : "conflito no arquivo", error: true,
+    detail: save.conflict?.message ?? "O salvamento automático está suspenso.", retry: false };
   if (save?.status === "error") return { text: "falha ao salvar", error: true,
     detail: `${save.error ?? "A gravação falhou."} Mantenha o servidor aberto e tente novamente.`, retry: true };
   if (localChanges) return { text: "alterações pendentes", error: false,

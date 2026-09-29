@@ -8,7 +8,7 @@ type Action = ServerMsg | { type: "status"; connected: boolean };
 
 function reducer(state: NotebookState, a: Action): NotebookState {
   return a.type === "status"
-    ? { ...state, connected: a.connected, save: a.connected ? state.save : null }
+    ? { ...state, connected: a.connected, save: a.connected || state.save?.reload ? state.save : null }
     : reduce(state, a);
 }
 
@@ -36,5 +36,6 @@ export function useNotebook(onMessage?: (m: ServerMsg) => void) {
   const send = useCallback((m: ClientMsg, queuedAt?: number) => conn.current?.send(m, queuedAt), []);
   const discardEdits = useCallback((cid: number) => conn.current?.discardEdits(cid), []);
   const discardAddition = useCallback((request: string) => conn.current?.discardAddition(request), []);
-  return { state, send, discardEdits, discardAddition, pendingChanges, notice, setNotice, clearNotice: () => setNotice("") };
+  const hasPendingChanges = useCallback(() => conn.current?.hasPendingChanges ?? true, []);
+  return { state, send, discardEdits, discardAddition, pendingChanges, hasPendingChanges, notice, setNotice, clearNotice: () => setNotice("") };
 }

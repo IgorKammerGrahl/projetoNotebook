@@ -11,45 +11,17 @@ import hashlib
 import json
 import logging
 import math
-import os
 import secrets
-import tempfile
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
 
-from .fmt import Document, parse_document, serialize_document
+from .fmt import Document, parse_document
 from .session import Session
+from .storage import FileConflict, NotebookFile, read_version, write_notebook as _write_notebook
 
 SAVE_DEBOUNCE = 1.0  # seconds after the last change (D-015)
 log = logging.getLogger("notebook.web")
-
-
-def _write_notebook(path, document):
-    """One immutable snapshot, replaced atomically; all disk I/O runs off the loop."""
-    tmp = None
-    try:
-        with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent,
-                                         prefix=f".{path.name}.", suffix=".tmp", delete=False) as f:
-            tmp = Path(f.name)
-            if path.exists():
-                os.fchmod(f.fileno(), path.stat().st_mode & 0o777)
-            f.write(serialize_document(document))
-            f.flush()
-            os.fsync(f.fileno())
-        tmp.replace(path)
-        # A successful rename alone does not confirm directory durability.
-        fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
-        try:
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-    finally:
-        if tmp is not None:
-            try:
-                tmp.unlink(missing_ok=True)
-            except OSError:
-                log.warning("could not remove temporary notebook %s", tmp, exc_info=True)
 
 
 def _clean(obj):
@@ -77,13 +49,14 @@ class NotebookServer:
     def __init__(self, path: Path, port: int = 0, token: str | None = None,
                  static_dir: Path | None = None, extra_origins: tuple[str, ...] = (),
                  core_dumps: bool = False, speculate_debounce: float = 0.3):
-        self.path = Path(path)
+        self.file = NotebookFile(path)
+        self.path = self.file.path
         self.token = token or secrets.token_urlsafe(32)
         self.static_dir = static_dir
         self.extra_origins = set(extra_origins)
         self.port = port
-        self.session = Session(self.path.parent / ".nbcache", core_dumps=core_dumps,
-                               speculate_debounce=speculate_debounce)
+        self._session_options = dict(core_dumps=core_dumps, speculate_debounce=speculate_debounce)
+        self.session = Session(self.path.parent / ".nbcache", **self._session_options)
         self.clients: dict[web.WebSocketResponse, asyncio.Queue] = {}  # one ordered outbox per client
         self._epoch = secrets.token_hex(16)
         self._document_id = hashlib.sha256(str(self.path.resolve()).encode()).hexdigest()
@@ -94,6 +67,13 @@ class NotebookServer:
         self._revision = 0
         self._saved_revision = 0
         self._save_error = None
+        self._file_conflict = None
+        self._copy = None
+        self._operation_task = None
+        self._reload_id = None
+        self._reload_waiters = {}
+        self._reload_committing = False
+        self._reload_cancelled = False
         self._source_versions = ()
         self._loading = True
         self._closing = False
@@ -116,8 +96,20 @@ class NotebookServer:
     # ---------------- lifecycle ----------------
 
     async def start(self):
-        exists = self.path.exists()
-        document = parse_document(self.path.read_text(encoding="utf-8") if exists else "")
+        try:
+            data = self.file.open()  # lock before reading or starting any kernel
+            document = parse_document(data.decode("utf-8") if data is not None else "")
+            await self._start(document, data is not None)
+        except BaseException:
+            try:
+                await self.session.close()
+                if self._runner:
+                    await self._runner.cleanup()
+            finally:
+                self.file.close()
+            raise
+
+    async def _start(self, document, exists):
         app = web.Application(middlewares=[self._check_host])
         app.router.add_get("/ws", self._ws)
         app.router.add_get("/", self._index)
@@ -145,9 +137,12 @@ class NotebookServer:
             self._save_handle.cancel()
             self._save_handle = None
         try:
+            self._cancel_reload()
+            if self._operation_task:
+                await asyncio.shield(self._operation_task)
             if self._save_task:
                 await asyncio.shield(self._save_task)
-            if self._saved_revision != self._revision:
+            if self._saved_revision != self._revision and not self._file_conflict:
                 self._start_save()  # also retries a previous failed autosave once
                 await asyncio.shield(self._save_task)
             if self._saved_revision != self._revision:
@@ -161,7 +156,11 @@ class NotebookServer:
                 try:
                     await self.session.close()
                 finally:
-                    await self._runner.cleanup()
+                    try:
+                        if self._runner:
+                            await self._runner.cleanup()
+                    finally:
+                        self.file.close()
 
     @property
     def url(self):
@@ -179,7 +178,7 @@ class NotebookServer:
     # ---------------- WebSocket ----------------
 
     async def _ws(self, request):
-        if self._closing:
+        if self._closing or self._reload_committing:
             raise web.HTTPServiceUnavailable(text="notebook is closing")
         if request.headers.get("Origin") not in self.allowed_origins():
             raise web.HTTPForbidden(text="forbidden: unexpected Origin")
@@ -192,6 +191,7 @@ class NotebookServer:
         # reordered (large frames are compressed in an executor, small ones are not).
         outbox: asyncio.Queue = asyncio.Queue()
         self.clients[ws] = outbox
+        self._cancel_reload()  # a newly connected tab must not miss the readiness barrier
         writer = asyncio.create_task(self._writer(ws, outbox))
         peer = f"{request.remote}/{id(ws):x}"
         log.info("client connected: %s", peer)
@@ -220,6 +220,7 @@ class NotebookServer:
                     if seq is not None:
                         outbox.put_nowait({"type": "ack", "seq": seq})
         finally:
+            self._cancel_reload()
             self.clients.pop(ws, None)
             writer.cancel()
             log.info("client disconnected: %s", peer)
@@ -263,6 +264,17 @@ class NotebookServer:
             raise ValueError("O servidor está encerrando; a ação não foi aceita.")
         s = self.session
         kind = m.get("type")
+        if kind == "reload_ready":
+            future = self._reload_waiters.get(ws)
+            if future and not future.done() and m.get("request") == self._reload_id:
+                future.set_result(m.get("ready") is True)
+            return
+        if kind != "edit" and m.get("session", self._epoch) != self._epoch:
+            raise ValueError("O notebook foi recarregado; a ação antiga foi descartada.")
+        if self._reload_committing:
+            raise ValueError("Aguarde o carregamento da versão externa.")
+        if kind in {"edit", "add", "delete", "run", "run_all", "stop"}:
+            self._cancel_reload()
         try:
             if kind == "edit":
                 cid = m["cid"]
@@ -300,6 +312,14 @@ class NotebookServer:
                 s.stop()
             elif kind == "retry_save":
                 self._start_save()
+            elif kind in {"preserve_copy", "reload_external"}:
+                if not self._file_conflict or self._operation_task or self._save_task:
+                    raise ValueError("A resolução do arquivo não está disponível agora.")
+                if m.get("revision") != self._revision or m.get("session") != self._epoch:
+                    raise ValueError("A sessão mudou. Confira as alterações antes de continuar.")
+                if kind == "reload_external" and (not self._copy or self._copy[0] != self._revision):
+                    raise ValueError("Preserve uma cópia atual da sessão antes de carregar o arquivo.")
+                self._operation_task = asyncio.create_task(self._resolve_file(kind, self._revision))
             else:
                 self.clients[ws].put_nowait({"type": "error", "error": f"unknown message type {kind!r}"})
                 return
@@ -326,10 +346,19 @@ class NotebookServer:
         return tuple((cid, c.revision) for cid, c in self.session.sched.cells.items())
 
     def _save_state(self):
-        return {"status": "error" if self._save_error else
+        state = {"status": "conflict" if self._file_conflict else "error" if self._save_error else
                           "saved" if self._saved_revision == self._revision else "saving",
                 "revision": self._revision, "saved_revision": self._saved_revision,
                 "error": self._save_error}
+        if self._file_conflict:
+            state["conflict"] = self._file_conflict
+            state["copy"] = {"revision": self._copy[0], "path": str(self._copy[1])} if self._copy else None
+            state["reload"] = self._reload_id
+        return state
+
+    def _document(self):
+        return Document(self.session.to_file_cells(),
+                        [self._cell_json(cid)["uid"] for cid in self.session.sched.cells])
 
     def _publish_save(self):
         msg = {"type": "save_status", "save": self._save_state()}
@@ -340,14 +369,15 @@ class NotebookServer:
         self._revision += 1
         if self._save_handle:
             self._save_handle.cancel()
-        self._save_handle = asyncio.get_running_loop().call_later(SAVE_DEBOUNCE, self._start_save)
+        if not self._file_conflict:
+            self._save_handle = asyncio.get_running_loop().call_later(SAVE_DEBOUNCE, self._start_save)
         self._publish_save()
 
     def _start_save(self):
         if self._save_handle:
             self._save_handle.cancel()
         self._save_handle = None
-        if self._save_task or self._saved_revision == self._revision:
+        if self._save_task or self._file_conflict or self._saved_revision == self._revision:
             return
         self._save_error = None
         self._save_task = asyncio.create_task(self._save())
@@ -357,15 +387,17 @@ class NotebookServer:
         try:
             while self._saved_revision != self._revision:
                 revision = self._revision
-                cells = self.session.to_file_cells()  # copy on the loop, before crossing threads
-                document = Document(cells, [self._cell_json(cid)["uid"] for cid in self.session.sched.cells])
+                document = self._document()  # copy before crossing threads
                 try:
-                    await asyncio.to_thread(_write_notebook, self.path, document)
+                    await asyncio.to_thread(_write_notebook, self.file, document)
                 except Exception as exc:
                     reason = {errno.EACCES: "Sem permissão para gravar o arquivo.",
                               errno.EPERM: "Sem permissão para gravar o arquivo.",
                               errno.ENOSPC: "Sem espaço em disco."}.get(getattr(exc, "errno", None))
                     self._save_error = reason or "Não foi possível concluir a gravação do arquivo."
+                    if isinstance(exc, FileConflict):
+                        self._file_conflict = {"message": str(exc), "preserved": exc.preserved}
+                        self._save_error = str(exc)
                     log.exception("notebook save failed: %s (revision %s)", self.path, revision)
                     # Keep all accepted edits in Session; retry is explicit or triggered by a new edit.
                     if self._save_handle:
@@ -378,3 +410,81 @@ class NotebookServer:
                 # Only this task writes. Coalesce edits into the next snapshot, never overlap saves.
         finally:
             self._save_task = None
+
+    def _cancel_reload(self):
+        if self._reload_id:
+            self._reload_cancelled = True
+        for future in self._reload_waiters.values():
+            if not future.done():
+                future.set_result(False)
+
+    async def _resolve_file(self, kind, revision):
+        replacement = None
+        try:
+            if kind == "preserve_copy":
+                revision = self._revision  # snapshot and revision captured together on the loop
+                path, version = await asyncio.to_thread(self.file.preserve, self._document())
+                self._copy = (revision, path, version)
+                return
+            if revision != self._revision or not self._copy or self._copy[0] != revision:
+                raise ValueError("A sessão mudou antes do carregamento. Preserve uma cópia atual e tente novamente.")
+            self._reload_id = secrets.token_hex(16)
+            self._reload_cancelled = False
+            self._reload_waiters = {ws: asyncio.get_running_loop().create_future() for ws in self.clients}
+            self._publish_save()  # clients freeze editing before acknowledging readiness
+            ready = await asyncio.wait_for(asyncio.gather(*self._reload_waiters.values()), 8)
+            if not all(ready) or self._reload_cancelled or self._closing or revision != self._revision:
+                raise ValueError("Carregamento cancelado: há uma aba desconectada ou com edições pendentes. Resolva-as e tente novamente.")
+            self._reload_committing = True
+            data, version = await asyncio.to_thread(read_version, self.path)
+            if data is None:
+                raise ValueError("O arquivo externo foi removido. Restaure-o antes de carregar.")
+            document = parse_document(data.decode("utf-8"))
+            _, copy_version = await asyncio.to_thread(read_version, self._copy[1])
+            if copy_version != self._copy[2]:
+                self._copy = None
+                raise ValueError("A cópia da sessão mudou ou foi removida. Preserve outra cópia.")
+            # Start a clean kernel first. Failure leaves the old session usable.
+            replacement = Session(self.path.parent / ".nbcache", **self._session_options)
+            await replacement.start()
+            for cell in document.cells:
+                replacement.add(cell.code, cell.kind)  # explicitly no run_all / recovery execution
+            await asyncio.to_thread(self.file.check, version)
+            _, copy_version = await asyncio.to_thread(read_version, self._copy[1])
+            if copy_version != self._copy[2]:
+                self._copy = None
+                raise ValueError("A cópia da sessão mudou durante o carregamento. Preserve outra cópia.")
+            if self._closing:
+                raise ValueError("O servidor está encerrando.")
+            previous_session = self.session
+            previous_session.listeners.remove(self._on_change)
+            # No await between final copy validation and publishing the swap.
+            self.session = replacement
+            replacement = None
+            self.session.listeners.append(self._on_change)
+            self.file.expected = version
+            self._epoch = secrets.token_hex(16)
+            self._cell_ids = dict(zip(self.session.sched.cells, document.cell_ids))
+            self._edit_sources.clear()
+            self._source_versions = self._document_version()
+            self._revision = self._saved_revision = 0
+            self._file_conflict = self._save_error = None
+            self._reload_id = None
+            self._reload_committing = False
+            for outbox in self.clients.values():
+                outbox.put_nowait(self._snapshot())
+                outbox.put_nowait({"type": "notice", "text": f"Versão externa carregada sem executar. Cópia da sessão: {self._copy[1]}"})
+            self._copy = None
+            await previous_session.close()
+        except Exception as exc:
+            log.warning("file resolution failed: %s", exc, exc_info=True)
+            for outbox in self.clients.values():
+                outbox.put_nowait({"type": "notice", "text": str(exc) or "Uma aba não confirmou o carregamento. Tente novamente."})
+        finally:
+            if replacement:
+                await replacement.close()
+            self._reload_id = None
+            self._reload_committing = False
+            self._reload_waiters = {}
+            self._operation_task = None
+            self._publish_save()
