@@ -1,7 +1,9 @@
 """Integration: CLI on a real file, plus the D-006 environment check."""
 import os
+import shutil
 import subprocess
 import sys
+from pathlib import Path
 
 from kernel.__main__ import env_problems
 
@@ -34,6 +36,15 @@ def test_cli_runs_notebook_in_dependency_order(tmp_path):
     assert r.returncode == 0, r.stderr
     # ids count every cell of the file (the markdown title is [1]); only python/mojo are listed
     assert r.stdout.splitlines() == ["[2] ok", "    6", "[3] ok", "[4] ok", "    mojo sum 6.0"]
+
+
+def test_reference_notebook_runs_and_matches_numpy(tmp_path):
+    """1.0 acceptance (D-023): the heat notebook runs end to end and Mojo agrees with NumPy."""
+    p = tmp_path / "heat.nb.md"
+    shutil.copy(Path(__file__).parent.parent / "examples" / "heat.nb.md", p)
+    r = subprocess.run([sys.executable, "-m", "kernel", "run", str(p)], capture_output=True, text=True)
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert "Mojo confere com NumPy" in r.stdout
 
 
 def test_cli_exit_code_on_error(tmp_path):

@@ -1029,3 +1029,45 @@ e de [renameat2](https://man7.org/linux/man-pages/man2/rename.2.html).
 **Verificação:** `tests/test_file_conflicts.py`, regressões de persistência,
 `frontend/src/saving.test.ts`, `frontend/src/connection.test.ts` e
 `frontend/e2e/file-conflicts.spec.js` com processos reais.
+
+## D-023 — Escopo da 1.0 e notebook de referência (2026-09-29)
+
+**Contexto:** da v0.1.0 à v0.2.0, cinco blocos seguidos endureceram a persistência
+(D-020 a D-022). Cada um foi escolhido a partir das dívidas e limites deixados pelo
+anterior, e nenhuma capacidade nova de notebook entrou.
+
+**Escolha:** a 1.0 é um notebook local, em Linux, em que uma análise numérica real
+Python + Mojo vai do começo ao fim. A persistência fica congelada no estado da
+v0.2.0: DEBT-015 é limite aceito, não bloco futuro. Ordem:
+
+1. Notebook de referência: `examples/heat.nb.md` (difusão de calor 2-D).
+2. CI no GitHub Actions (antecipado do passo 5, antes de mexer no kernel).
+3. Arrays 2-D contíguos (DEBT-009). Precisa vir antes da 1.0 porque muda a
+   interface pública da célula Mojo.
+4. Saídas ricas: imagem e tabela.
+5. Sessões longas: reinício manual do kernel com indicador (DEBT-014), limite do
+   `.nbcache` (DEBT-011); o reinício também resolve a DEBT-001.
+6. Release: comando único, LICENSE, CHANGELOG, formato v2 congelado, tag v1.0.0.
+
+Fora da 1.0: DEBT-003/004/005 (documentados), DEBT-012, DEBT-013, DEBT-015.
+
+**Critério de aceitação:** `examples/heat.nb.md` roda de ponta a ponta, o Mojo
+confere com o NumPy e nenhum trecho **Lacuna** sobra no arquivo.
+
+**Atritos do primeiro uso** (CLI e interface, 2026-09-29):
+
+| Atrito | Passo |
+|---|---|
+| A grade vai achatada para o Mojo e volta achatada: `ravel`/`reshape`, índice `i * nx + j` e `nx`, `ny` passados à parte. | 3 |
+| Não há buffer de trabalho seguro e rápido: `List[i]` checado deixa o laço do estêncil 6× mais lento (111 vs 17 ms, 200×200×500). O notebook usa `unsafe_get`/`unsafe_set`, e por isso a célula aparece como suspeita em qualquer crash. Alternar dois ponteiros de `List`s diferentes não compila (origens distintas), daí um buffer único de 2n com deslocamentos. | 3 |
+| O preview de array mostra os 20 primeiros valores do `ravel`: numa grade, só as bordas (zeros). Faltam mín/máx/média. | 4 |
+| Sem imagem: o mapa de calor é texto. | 4 |
+| A interface não mostra o tempo de execução da célula; o notebook mede com `perf_counter`. | 4 |
+| Preview de função é ruído (`<function … at 0x…>`), como já eram os módulos. | 4 |
+| O painel do grafo corta nós e arestas a 1280 px de largura. | 4 |
+| O topo mostra "Notebook", não o nome do arquivo. | 6 |
+
+**Resultado medido:** a versão com `unsafe_get` leva 16–17 ms, contra 114–121 ms
+do NumPy vetorizado (CLI, 200×200, 500 passos), ~7× mais rápida.
+
+**Verificação:** `tests/test_cli.py::test_reference_notebook_runs_and_matches_numpy`.
