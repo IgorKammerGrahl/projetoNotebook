@@ -21,6 +21,8 @@ pixi run python -m kernel serve /tmp/demo.nb.md
 
 Abra a URL impressa (`http://127.0.0.1:8765/?token=...`). O token é obrigatório
 (D-016). A demonstração explica, na primeira célula, como provocar cada estado.
+Para uma análise de verdade, abra `examples/heat.nb.md` (difusão de calor 2-D em
+Mojo, conferida com NumPy), o notebook de referência da 1.0 (D-023).
 
 O topo mostra o estado de salvamento. **“Salvo”** confirma que as alterações
 aceitas foram gravadas; “alterações pendentes” também considera rascunhos,
