@@ -101,6 +101,7 @@ async def test_new_edit_kills_the_build_in_progress(s, cache):
 
 @session_run
 async def test_independent_cells_compile_in_parallel(s, cache):
+    s.max_builds = 3   # the default scales with CPUs (cpu_count // 4): 1 slot on a 4-vCPU CI runner
     s.load([Cell("python", "a = 4"),
             Cell("mojo", cell(out="mut t1: Int", body="    t1 = a")),
             Cell("mojo", cell(out="mut t2: Int", body="    t2 = a")),
