@@ -13,8 +13,11 @@ def run(xs: ArrayIn[DType.float64], k: Float64,   # entradas: sem `mut`
 ```
 
 - **Tipos:** `Int`, `Float64`, `ArrayIn[DType.<dt>]` e `ArrayOut[DType.<dt>]`,
-  com `<dt>` ∈ `float64`, `float32`, `int64`, `int32`. Arrays são 1-D e
-  contíguos; o host valida dtype, contiguidade e alinhamento antes de chamar.
+  com `<dt>` ∈ `float64`, `float32`, `int64`, `int32`. Arrays 2-D:
+  `ArrayIn[DType.<dt>, 2]` e `ArrayOut[DType.<dt>, 2]` (D-024). Arrays são
+  contíguos (ordem C); o host valida dtype, número de dimensões, contiguidade e
+  alinhamento antes de chamar. Um array 2-D numa entrada 1-D, ou o contrário, é
+  recusado: não há achatamento implícito.
 - **Cada nome tem um único dono no grafo:** `mut x: ArrayIn` é proibido.
 - **Saídas escalares começam em 0 a cada execução** (D-011). Se `run` levanta
   erro, nenhuma saída é publicada.
@@ -28,12 +31,36 @@ def run(xs: ArrayIn[DType.float64], k: Float64,   # entradas: sem `mut`
 
 | Forma | Checagem | Quando usar |
 |---|---|---|
-| `xs[i]`, `ys[i] = v` | limites (levanta `Error`) | padrão |
-| `xs.unsafe_get(i)`, `ys.unsafe_set(i, v)` | nenhuma | índice que o compilador não prova estar nos limites (gather, `xs[idx[i]]`): a checagem custa **3×** ali |
-| `xs.unsafe_ptr()` / `ys.unsafe_ptr()` | nenhuma | SIMD explícito (abaixo). Devolve o `Pointer` do stdlib. Em `ArrayOut`, só depois de `alloc()` |
+| `xs[i]`, `ys[i] = v` (1-D); `m[i, j]`, `o[i, j] = v` (2-D) | limites (levanta `Error`) | padrão |
+| `xs.unsafe_get(i)`, `ys.unsafe_set(i, v)`; `m.unsafe_get(i, j)`, `o.unsafe_set(i, j, v)` | nenhuma | índice que o compilador não prova estar nos limites (gather, `xs[idx[i]]`): a checagem custa **3×** ali |
+| `xs.unsafe_ptr()` / `ys.unsafe_ptr()` | nenhuma | SIMD explícito (abaixo). Devolve o `Pointer` do stdlib, em ordem C (linha a linha). Em `ArrayOut`, só depois de `alloc()` |
 
 Com índice vindo de `range(len(xs))`, o custo da checagem medido foi 0–4%.
-Números em `docs/PHASE2.md`.
+Números em `docs/PHASE2.md`. No estêncil 2-D do notebook de referência
+(200×200, 500 passos), a versão checada leva 23–33 ms e a `unsafe_*`, 16–17 ms;
+o NumPy vetorizado, 114 ms.
+
+**Dimensões:** `m.dim(0)` (linhas) e `m.dim(1)` (colunas); `len(m)` é
+`m.dim(0)`, como no NumPy. Saída 2-D: `o.alloc(linhas, colunas)`; 1-D:
+`ys.alloc(n)`. Usar a forma de outro rank (`m[i]` num array 2-D) é erro de
+compilação apontado na linha da célula.
+
+## Buffer de trabalho: `Scratch`
+
+Para temporários que não saem da célula (o segundo buffer de um estêncil, um
+acumulador):
+
+```mojo
+var a = Scratch[DType.float64, 2](ny, nx)   # 2-D, zerado
+var acc = Scratch[DType.int64](n)           # 1-D
+a[i, j] = 1.0
+swap(a, b)                                  # troca dois buffers sem copiar
+```
+
+Mesmo acesso dos arrays (`[...]` checado, `unsafe_get`/`unsafe_set`, `dim`,
+`len`), sem `unsafe_ptr`. A memória é liberada quando a célula retorna. Não
+entra no grafo. Prefira `Scratch` a `List` em laços quentes: `List[i]` checado
+deixou o mesmo estêncil 6× mais lento (D-023).
 
 ## Desempenho: o Mojo 1.1 não autovetoriza
 
@@ -72,7 +99,7 @@ do caminho 1.
 ## Quando algo dá errado
 
 - **Erro de compilação:** aponta a linha da célula. Colisão com nomes do
-  prelúdio (`ArrayIn`, `ArrayOut`, `nb_cell_entry`, `__nb_*`) é indicada.
+  prelúdio (`ArrayIn`, `ArrayOut`, `Scratch`, `nb_cell_entry`, `__nb_*`) é indicada.
 - **Crash do kernel** (SIGSEGV, via `unsafe_*` ou `Pointer`): no servidor, a
   célula vai para `crashed`, o kernel reinicia e o resto do notebook é
   reexecutado (D-013).

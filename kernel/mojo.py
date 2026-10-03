@@ -21,6 +21,7 @@ import numpy as np
 PRELUDE = (Path(__file__).parent / "prelude.mojo").read_text()
 _PY_SYMBOL = re.compile(r"Python|dlsym|\bPy")
 DTYPES = ("float64", "float32", "int64", "int32")
+RANKS = (1, 2)
 
 
 @dataclass(frozen=True)
@@ -28,6 +29,7 @@ class Type:
     mojo: str               # input spelling in run()'s signature
     np_dtype: object = None  # arrays only
     ctype: object = None     # scalars only
+    rank: int = 0            # arrays: 1 or 2 (D-024)
 
     @property
     def array(self):
@@ -35,7 +37,8 @@ class Type:
 
 
 SCALARS = {"Int": Type("Int", ctype=ctypes.c_int64), "Float64": Type("Float64", ctype=ctypes.c_double)}
-ARRAYS = {d: Type(f"ArrayIn[DType.{d}]", np_dtype=np.dtype(d)) for d in DTYPES}
+ARRAYS = {(d, r): Type(f"ArrayIn[DType.{d}]" if r == 1 else f"ArrayIn[DType.{d}, {r}]", np_dtype=np.dtype(d), rank=r)
+          for d in DTYPES for r in RANKS}
 
 
 class InterfaceError(Exception):
@@ -64,13 +67,13 @@ class Interface:
 # D-010: a restricted grammar for run()'s signature, not a Mojo parser.
 ACCEPTED = f"""accepted form:
     def run(<param>, ...) [raises]:
-    input:   name: Int | Float64 | ArrayIn[DType.<dt>]
-    output:  mut name: Int | Float64 | ArrayOut[DType.<dt>]
+    input:   name: Int | Float64 | ArrayIn[DType.<dt>] | ArrayIn[DType.<dt>, 2]
+    output:  mut name: Int | Float64 | ArrayOut[DType.<dt>] | ArrayOut[DType.<dt>, 2]
     <dt>: {', '.join(DTYPES)}; end-of-line `#` comments allowed;
     no defaults, no return type, no [params]"""
 _RUN = re.compile(r"^def run\b", re.M)
 _PARAM = re.compile(r"^(mut\s+)?([A-Za-z_]\w*)\s*:\s*(.+)$")
-_TYPE = re.compile(r"^(?:(Int|Float64)|(ArrayIn|ArrayOut)\s*\[\s*(?:DType)?\.(\w+)\s*\])$")
+_TYPE = re.compile(r"^(?:(Int|Float64)|(ArrayIn|ArrayOut)\s*\[\s*(?:DType)?\.(\w+)\s*(?:,\s*(\d+)\s*)?\])$")
 
 
 def parse_interface(code: str) -> Interface:
@@ -101,8 +104,15 @@ def parse_interface(code: str) -> Interface:
     if not tail:
         fail(close, "after `)` only `raises` and `:` are accepted")
 
+    chunks, depth, start = [], 0, 0  # split on commas outside [...]: `ArrayIn[DType.float64, 2]`
+    for k, ch in enumerate(raw):
+        depth += (ch == "[") - (ch == "]")
+        if ch == "," and depth == 0:
+            chunks.append(raw[start:k])
+            start = k + 1
+    chunks.append(raw[start:])
     ins, outs, order, offset = [], [], [], open_ + 1
-    for chunk in raw.split(","):
+    for chunk in chunks:
         pos, param = offset + len(chunk) - len(chunk.lstrip()), " ".join(chunk.split())
         offset += len(chunk) + 1
         if not param:
@@ -120,15 +130,18 @@ def parse_interface(code: str) -> Interface:
             fail(pos, f"{name!r}: names starting with `_` are private and cannot cross cells")
         if name in order:
             fail(pos, f"{name!r} appears twice")
-        scalar, kind, dtype = tm.groups()
+        scalar, kind, dtype, rank = tm.groups()
         if kind and dtype not in DTYPES:
             fail(pos, f"unsupported dtype {dtype!r}")
+        rank = int(rank or 1)
+        if kind and rank not in RANKS:
+            fail(pos, f"unsupported rank {rank} for {name!r} (arrays are 1-D or 2-D)")
         if kind == "ArrayIn" and is_mut:
             fail(pos, f"`mut {name}: ArrayIn` would make {name!r} both input and output; "
                       "every name has a single owner in the graph — write a new ArrayOut instead")
         if kind == "ArrayOut" and not is_mut:
             fail(pos, f"output {name!r} must be declared `mut {name}: ArrayOut[...]`")
-        t = SCALARS[scalar] if scalar else ARRAYS[dtype]
+        t = SCALARS[scalar] if scalar else ARRAYS[dtype, rank]
         (outs if is_mut else ins).append((name, t))
         order.append(name)
     return Interface(tuple(ins), tuple(outs), tuple(order))
@@ -139,8 +152,9 @@ def generate(code: str, iface: Interface) -> str:
     body, slot = [], 0
     for name, t in iface.ins:
         if t.array:
-            body.append(f"var {name} = {t.mojo}(__nb_slot(slots, {slot}), __nb_slot(slots, {slot + 1}))")
-            slot += 2
+            body.append(f"var {name} = {t.mojo}(__nb_slot(slots, {slot}), __nb_slot(slots, {slot + 1}), "
+                        f"__nb_slot(slots, {slot + 2}))")  # address, d0, d1
+            slot += 3
         else:
             body.append(f"var {name} = Pointer[{t.mojo}, MutAnyOrigin]"
                         f"(unsafe_from_address=__nb_slot(slots, {slot})).unsafe_load()")
@@ -151,7 +165,7 @@ def generate(code: str, iface: Interface) -> str:
     body.append(f"run({', '.join(iface.order)})")
     for name, t in iface.outs:
         if t.array:
-            body += [f"if {name}._size < 0:", f"    raise Error(\"output '{name}' was never allocated\")"]
+            body += [f"if {name}._d0 < 0:", f"    raise Error(\"output '{name}' was never allocated\")"]
         else:
             body.append(f"Pointer[{t.mojo}, MutAnyOrigin](unsafe_from_address=__nb_slot(slots, {slot}))"
                         f".unsafe_store({name})")
@@ -166,15 +180,30 @@ def _map_errors(output: str, src: Path, user_lines: int) -> tuple[str, list]:
     """Compiler diagnostics -> (text in cell lines, [{line, col, message}]);
     errors in generated code get a hint and are pinned to line 1."""
     diag = re.compile(rf"^{re.escape(str(src))}:(\d+):(\d+): error: (.*)$")
+    note = re.compile(rf"^{re.escape(str(src))}:(\d+):(\d+): note: (.*)$")
     lines, out, generated, diags = output.splitlines(), [], False, []
     for i, line in enumerate(lines):
         m = diag.match(line)
         if not m:
             continue
-        ln, col, msg = int(m.group(1)), m.group(2), m.group(3)
+        ln, col, msg, context = int(m.group(1)), m.group(2), m.group(3), lines[i + 1:i + 3]
+        if ln > user_lines:
+            # A failed prelude constraint (`x[i]` on a 2-D array) is reported at the generated entry
+            # point; its notes carry the message and the call chain. Pin it to the innermost cell line.
+            site, why = None, None
+            for nl in lines[i + 1:]:
+                if diag.match(nl):
+                    break
+                if n := note.match(nl):
+                    if n.group(3).startswith("constraint failed: "):  # prelude's, or the cell's own assert
+                        why = n.group(3).removeprefix("constraint failed: ")
+                    if int(n.group(1)) <= user_lines:
+                        site = (int(n.group(1)), n.group(2))
+            if site and why:
+                ln, col, msg, context = site[0], site[1], why, []  # its context lines are generated paths
         if ln <= user_lines:
             out.append(f"line {ln}:{col}: error: {msg}")
-            out += [f"    {l}" for l in lines[i + 1:i + 3] if not diag.match(l)]
+            out += [f"    {l}" for l in context if not diag.match(l)]
             diags.append({"line": ln, "col": int(col), "message": msg})
         else:
             generated = True
@@ -182,7 +211,7 @@ def _map_errors(output: str, src: Path, user_lines: int) -> tuple[str, list]:
             diags.append({"line": 1, "col": 1, "message": f"(generated wrapper) {msg}"})
     if generated:
         out.append("hint: a name in the cell probably collides with the kernel prelude "
-                   "(ArrayIn, ArrayOut, nb_cell_entry, __nb_*)")
+                   "(ArrayIn, ArrayOut, Scratch, nb_cell_entry, __nb_*)")
     return "\n".join(out) or output.strip(), diags
 
 
@@ -206,20 +235,24 @@ def _capture_fds(sink: list):
             sink.append(f.read().decode(errors="replace"))
 
 
-_AllocFn = ctypes.CFUNCTYPE(ctypes.c_ssize_t, ctypes.c_ssize_t, ctypes.c_ssize_t)
+_AllocFn = ctypes.CFUNCTYPE(ctypes.c_ssize_t, ctypes.c_ssize_t, ctypes.c_ssize_t, ctypes.c_ssize_t)
 
 
 def _check_input(name: str, t: Type, v):
+    """Trust boundary (D-003, D-024): Mojo indexes with the shape it receives, so nothing but an
+    exact-dtype, declared-rank, C-contiguous, aligned ndarray gets through."""
     if t.array:
         if not isinstance(v, np.ndarray):
             raise CellError(f"input {name!r}: expected numpy array of {t.np_dtype}, got {type(v).__name__}")
         problems = [p for bad, p in [(v.dtype != t.np_dtype, f"dtype {v.dtype} (expected {t.np_dtype})"),
-                                     (v.ndim != 1, f"{v.ndim}-D (expected 1-D)"),
+                                     (v.ndim != t.rank, f"{v.ndim}-D (expected {t.rank}-D)"),
                                      (not v.flags.c_contiguous, "not contiguous"),
                                      (not v.flags.aligned, "not aligned")] if bad]
         if problems:
-            raise CellError(f"input {name!r}: {', '.join(problems)}; "
-                            f"use np.ascontiguousarray(x, dtype=np.{t.np_dtype}) in a Python cell")
+            fix = (f"reshape it, or declare `{ARRAYS[str(t.np_dtype), v.ndim].mojo}`"
+                   if v.ndim != t.rank and v.ndim in RANKS
+                   else f"use np.ascontiguousarray(x, dtype=np.{t.np_dtype}) in a Python cell")
+            raise CellError(f"input {name!r}: {', '.join(problems)}; {fix}")
         return v
     ok = (isinstance(v, (int, np.integer)) and not isinstance(v, (bool, np.bool_))) if t.mojo == "Int" \
         else isinstance(v, (int, float, np.integer, np.floating)) and not isinstance(v, (bool, np.bool_))
@@ -314,7 +347,10 @@ def call(lib: ctypes.CDLL, iface: Interface, values: dict) -> tuple[dict, str]:
     for name, t in iface.ins:
         v = _check_input(name, t, values[name])
         keep.append(v)
-        slots += [v.ctypes.data, v.size] if t.array else [ctypes.addressof(v)]
+        if t.array:
+            slots += [v.ctypes.data, v.shape[0], v.shape[1] if t.rank == 2 else 1]  # the real shape
+        else:
+            slots.append(ctypes.addressof(v))
     scalars = {}
     for name, t in iface.outs:
         if not t.array:
@@ -322,17 +358,23 @@ def call(lib: ctypes.CDLL, iface: Interface, values: dict) -> tuple[dict, str]:
             slots.append(ctypes.addressof(scalars[name]))
     arrays, err = {}, []
 
-    def alloc(index, n):
+    def alloc(index, d0, d1):
+        """Called from Mojo. Returns an address of exactly d0 * d1 elements, or 0 (refused)."""
         try:  # D-003: an exception escaping here would hand Mojo garbage
-            if index == -1:
-                buf = np.empty(max(n, 1), np.uint8)
-                err.append(buf[:n])
-                return buf.ctypes.data
-            name, t = iface.outs[index]
-            if not t.array or name in arrays or n < 0:
+            if d0 < 0 or d1 < 0:
                 return 0
+            if index == -1:  # error message bytes
+                buf = np.empty(max(d0, 1), np.uint8)
+                err.append(buf[:d0])
+                return buf.ctypes.data
+            if not 0 <= index < len(iface.outs):  # never Python's negative indexing
+                return 0
+            name, t = iface.outs[index]
+            if not t.array or name in arrays or (t.rank == 1 and d1 != 1):
+                return 0
+            n = d0 * d1  # Python int: no overflow; np.empty refuses what cannot be allocated
             buf = np.empty(max(n, 1), t.np_dtype)  # never hand out address 0 for n == 0
-            arrays[name] = buf[:n]
+            arrays[name] = buf[:n].reshape((d0, d1) if t.rank == 2 else (d0,))
             return buf.ctypes.data
         except BaseException:
             return 0

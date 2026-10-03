@@ -1071,3 +1071,52 @@ confere com o NumPy e nenhum trecho **Lacuna** sobra no arquivo.
 do NumPy vetorizado (CLI, 200×200, 500 passos), ~7× mais rápida.
 
 **Verificação:** `tests/test_cli.py::test_reference_notebook_runs_and_matches_numpy`.
+
+## D-024 — Arrays 2-D e buffers `Scratch` nas células Mojo (2026-10-03)
+
+**Contexto:** o notebook de referência (D-023) achatava a grade para passá-la ao
+Mojo, indexava à mão (`i * nx + j`) e usava `List.unsafe_get` como segundo
+buffer, porque `List[i]` checado deixava o estêncil 6× mais lento. Essa é a
+interface pública da célula; mudá-la depois da 1.0 quebraria notebooks.
+
+**Escolha:**
+- `ArrayIn[DType.<dt>, 2]` e `ArrayOut[DType.<dt>, 2]`: o rank é um parâmetro
+  com padrão 1, então as células 1-D não mudam. Acesso `m[i, j]`, `m.dim(0)`,
+  `m.dim(1)`; `len(m) == m.dim(0)`, como no NumPy; `o.alloc(linhas, colunas)`.
+  Usar a forma de outro rank (`m[i]` num 2-D) falha na compilação por
+  `comptime assert`. O erro, que o compilador atribui ao wrapper gerado, é
+  remapeado para a linha da célula com a mensagem do prelúdio.
+- `Scratch[DType.<dt>, rank](...)`: buffer local, zerado, com o mesmo acesso
+  checado. Baseado em `List`, que pertence ao struct: nenhum ponteiro sobrevive
+  a ele e não depende da API de heap do Mojo 1.1, que está em transição (`alloc`
+  sem `Layout` depreciado, migração para `unsafe_alloc`).
+- Só 1-D e 2-D. 3-D fica para quando um notebook real precisar (DEBT-009).
+
+**Fronteira de confiança:** o Mojo indexa com o shape que recebe, então tudo que
+define esse shape é validado do lado Python, que recusa em caso de dúvida.
+- **Entradas:** dtype exato, `ndim` igual ao rank declarado, contiguidade C e
+  alinhamento, antes de o Mojo ver o ponteiro. Os slots levam
+  `[endereço, d0, d1]` com o shape real do array (`d1 = 1` no 1-D). Não há
+  achatamento implícito nem cópia.
+- **Alocação de saída:** o callback agora é `alloc(índice, d0, d1)`. O Python
+  recusa (devolve 0) índice fora de `[0, n_saídas)`, inclusive negativos, que
+  antes cairiam na indexação negativa do Python; saída escalar ou já alocada;
+  dimensão negativa; `d1 ≠ 1` numa saída 1-D. Aloca exatamente `d0 * d1`
+  elementos (inteiro Python, sem estouro). O Mojo só grava o shape depois de
+  receber o endereço.
+- **`Scratch`:** recusa `d0 * d1` acima de 2⁴⁰ elementos antes de multiplicar.
+  Um tamanho que estourasse e desse a volta deixaria índices checados contra
+  `(d0, d1)` passarem num buffer pequeno.
+- Os acessos `unsafe_*` continuam sem checagem, como antes.
+
+**Resultado medido:** no notebook de referência, a versão checada (`Scratch` +
+`ArrayIn`/`ArrayOut` 2-D, sem nenhum `unsafe_*`) leva 23–33 ms; a versão com
+`unsafe_get`, 16–17 ms; o NumPy vetorizado, 114–115 ms (200×200, 500 passos,
+CLI). As lacunas de 2-D e de buffer de trabalho saíram do notebook; fica a de
+saídas ricas (passo 4 de D-023).
+
+**Verificação:** `tests/test_arrays_2d.py` (pelo caminho real, a `Session`):
+ida e volta 2-D, recusa de rank e de layout antes do Mojo, acesso fora dos
+limites vira erro e não crash, erro de rank na linha da célula, regras de
+`alloc` 2-D, `Scratch` zerado, `swap` e limite de tamanho;
+`tests/test_cli.py::test_reference_notebook_runs_and_matches_numpy`.
