@@ -7,7 +7,7 @@ import type { CellJson, SaveState } from "./protocol";
 const document = "a".repeat(64);
 const source = (code = "a = 1", version = "v1"): CellJson => ({ uid: "b".repeat(32),
   id: 1, kind: "python", code, version, edit_id: null, status: "ok", error: "", output: "",
-  previews: {}, defs: [], refs: [], upstream_modified: [], compiling: false, diagnostics: [], queue_position: null });
+  previews: {}, images: [], duration_ms: null, defs: [], refs: [], upstream_modified: [], compiling: false, diagnostics: [], queue_position: null });
 const saved: SaveState = { status: "saved", revision: 1, saved_revision: 1, error: null };
 class Database implements RecoveryDatabase {
   records = new Map<string, RecoveryEntry>();

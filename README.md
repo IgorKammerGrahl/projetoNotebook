@@ -7,7 +7,7 @@ dívidas em `docs/DEBTS.md`, guia das células Mojo em `docs/MOJO_CELLS.md`.
 ## Rodar localmente
 
 Pré-requisitos: [pixi](https://pixi.sh) e um compilador C (`gcc`). O pixi instala
-Python, Mojo, NumPy e Node.
+Python, Mojo, NumPy, matplotlib e Node.
 
 ```bash
 pixi install
@@ -109,7 +109,8 @@ Cobrem:
   interrupção forçada dos processos, conflitos após edição externa e células
   removidas, sem repetir execuções pendentes;
 - conflito de arquivo externo, cópia da sessão, recarregamento sem execução e
-  recusa de recarregamento enquanto outra aba possui edições pendentes.
+  recusa de recarregamento enquanto outra aba possui edições pendentes;
+- figuras do matplotlib, preview 2-D com estatísticas e tempo de execução.
 
 Em caso de falha, capturam imagem, trace e logs em `frontend/test-results/`.
 

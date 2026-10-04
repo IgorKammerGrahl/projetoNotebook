@@ -85,6 +85,8 @@ class CellState:
     error: str = ""
     output: str = ""
     previews: dict = field(default_factory=dict)
+    images: list = field(default_factory=list)  # base64 PNG figures of the last run (D-025)
+    duration_ms: float | None = None            # time of the last run, build excluded
     ran_defs: set[str] = field(default_factory=set)     # names this cell holds in the executor now
     defs_at_run: set[str] = field(default_factory=set)  # names claimed since the last run (every edit's defs)
     ran_once: bool = False
@@ -278,6 +280,7 @@ class Scheduler:
         if c is None:  # deleted while running
             return ([Delete(ex.defs)] if result["status"] == "ok" and ex.defs else []) + self._dispatch()
         c.output, c.previews = result["output"], result["previews"]
+        c.images, c.duration_ms = result.get("images", []), result.get("duration_ms")
         if result["status"] == "ok":
             c.ran_defs = set(ex.defs)
             c.ran_once = True
@@ -330,8 +333,8 @@ class Scheduler:
         # no longer exist anywhere: stop showing them (found in the browser check).
         for cid, c in self.cells.items():
             waiting = cid in self.queue or (self.running is not None and self.running.cid == cid)
-            if c.kind in GRAPH_KINDS and not waiting and (c.previews or c.output):
-                c.previews, c.output = {}, ""
+            if c.kind in GRAPH_KINDS and not waiting and (c.previews or c.output or c.images):
+                c.previews, c.output, c.images, c.duration_ms = {}, "", [], None
                 self.changed.add(cid)
         return actions
 
@@ -455,7 +458,7 @@ class Scheduler:
     def _drop(self, cid) -> list:
         c = self.cells[cid]
         names, c.ran_defs = sorted(c.ran_defs), set()
-        c.previews, c.output = {}, ""  # it will not run: whatever it showed no longer exists
+        c.previews, c.output, c.images, c.duration_ms = {}, "", [], None  # it will not run: whatever it showed no longer exists
         return [Delete(names)] if names else []
 
     def _resolve(self, cid, status, error) -> list:

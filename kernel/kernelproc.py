@@ -2,13 +2,15 @@
 
 Speaks line-delimited JSON over a socket inherited from the server, never over
 stdout/stderr: the executor redirects fds 1 and 2 to capture Mojo prints.
-    {"op": "exec", ...Exec fields}  -> {"status", "error", "output", "previews"}
+    {"op": "exec", ...Exec fields}  -> {"status", "error", "output", "previews", "images", "duration_ms"}
     {"op": "delete", "names": [...]} -> (no reply)
 """
 import json
+import os
 import resource
 import socket
 import sys
+import warnings
 
 from .executor import Executor
 
@@ -19,6 +21,10 @@ def main(fd: int, core_dumps: bool = False):
     # `serve --core-dumps` keeps the inherited limit, to debug a SIGSEGV in a Mojo cell.
     if not core_dumps:
         resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
+    # Figures are drawn off-screen and captured after each cell (executor.figures, D-025);
+    # plt.show() then has nothing to do and must not warn into the cell's output.
+    os.environ["MPLBACKEND"] = "Agg"
+    warnings.filterwarnings("ignore", message=".*non-interactive.*cannot be shown")
     sock = socket.socket(fileno=fd)
     rf, wf = sock.makefile("rb"), sock.makefile("wb")
     ex = Executor()

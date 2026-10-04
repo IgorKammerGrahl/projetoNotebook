@@ -42,6 +42,7 @@ def test_reference_notebook_runs_and_matches_numpy(tmp_path):
     """1.0 acceptance (D-023): the heat notebook runs end to end and Mojo agrees with NumPy."""
     p = tmp_path / "heat.nb.md"
     shutil.copy(Path(__file__).parent.parent / "examples" / "heat.nb.md", p)
+    assert "Lacuna" not in p.read_text()  # D-023: no workaround for a missing feature is left
     r = subprocess.run([sys.executable, "-m", "kernel", "run", str(p)], capture_output=True, text=True)
     assert r.returncode == 0, r.stdout + r.stderr
     assert "Mojo confere com NumPy" in r.stdout

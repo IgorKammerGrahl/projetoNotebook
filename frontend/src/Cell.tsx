@@ -74,6 +74,9 @@ export function Cell({ cell, all, edges, elapsed, onEdit, onRun, onDelete, onAdd
              aria-label={`célula ${cell.id}, ${cell.kind}`}>
       <header className="cell-head">
         <span className="cell-id">[{cell.id}] {KIND_LABEL[cell.kind]}</span>
+        {cell.duration_ms != null && (cell.status === "ok" || cell.status === "error") && (
+          <span className="duration" title="tempo da última execução (sem a compilação)">{took(cell.duration_ms)}</span>
+        )}
         {l.chips.map((c, i) => (
           <span key={i} className={`chip tone-${c.tone}${c.outlined ? " outlined" : ""}`} title={c.title}>
             <StateIcon name={c.icon} spin={c.spin} /> <Refs text={c.text} />
@@ -132,10 +135,13 @@ function Rendered({ cell, onEdit }: { cell: CellJson; onEdit: () => void }) {
 
 function Output({ cell, dim, outdated, showError }: { cell: CellJson; dim: boolean; outdated: boolean; showError: boolean }) {
   const previews = Object.entries(cell.previews);
-  if (!previews.length && !cell.output && !(showError && cell.error)) return null;
+  if (!previews.length && !cell.output && !cell.images.length && !(showError && cell.error)) return null;
   return (
     <div className={`output${dim ? " dim" : ""}${outdated ? " outdated" : ""}`}>
       {cell.output && <pre className="stdout">{cell.output}</pre>}
+      {cell.images.map((png, i) => (
+        <img key={i} className="figure" src={`data:image/png;base64,${png}`} alt={`figura ${i + 1} da célula ${cell.id}`} />
+      ))}
       {previews.length > 0 && (
         <dl className="previews">
           {previews.map(([name, p]) => <PreviewRow key={name} name={name} p={p} />)}
@@ -150,13 +156,27 @@ function Output({ cell, dim, outdated, showError }: { cell: CellJson; dim: boole
   );
 }
 
+const took = (ms: number) => ms < 1000 ? `${Math.round(ms)} ms` : `${(ms / 1000).toFixed(1).replace(".", ",")} s`;
+const num = (v: number | string) => typeof v === "number" && !Number.isInteger(v) ? String(Number(v.toPrecision(4))) : String(v);
+
 function PreviewRow({ name, p }: { name: string; p: Preview }) {
+  if (!("head" in p)) return <><dt>{name}</dt><dd><span className="type">{p.type}</span> {p.repr}</dd></>;
+  const [rows, cols] = p.shape;
   return (
     <>
       <dt>{name}</dt>
-      <dd>{"head" in p
-        ? <><span className="type">ndarray {p.dtype} {`[${p.shape.join(", ")}]`}</span> [{p.head.join(", ")}{p.head.length < p.shape.reduce((a, b) => a * b, 1) ? ", …" : ""}]</>
-        : <><span className="type">{p.type}</span> {p.repr}</>}</dd>
+      <dd>
+        <span className="type">ndarray {p.dtype} {`[${p.shape.join(", ")}]`}</span>
+        {p.min !== undefined && <span className="stats">mín {num(p.min)} · máx {num(p.max!)} · média {num(p.mean!)}</span>}
+        {p.rows ? (
+          <table className="corner" aria-label={`canto superior esquerdo de ${name}`}>
+            <tbody>
+              {p.rows.map((r, i) => <tr key={i}>{r.map((v, j) => <td key={j}>{num(v)}</td>)}{cols > r.length && <td>…</td>}</tr>)}
+              {rows > p.rows.length && <tr><td>⋮</td></tr>}
+            </tbody>
+          </table>
+        ) : <> [{p.head.map(num).join(", ")}{p.head.length < p.shape.reduce((a, b) => a * b, 1) ? ", …" : ""}]</>}
+      </dd>
     </>
   );
 }

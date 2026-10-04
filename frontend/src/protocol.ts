@@ -15,7 +15,9 @@ export interface Diagnostic {
 }
 
 export type Preview =
-  | { type: "ndarray"; shape: number[]; dtype: string; head: (number | string)[] }
+  | { type: "ndarray"; shape: number[]; dtype: string; head: (number | string)[];
+      min?: number | string; max?: number | string; mean?: number | string;  // numeric arrays; "nan" etc. as strings
+      rows?: (number | string)[][] }                                          // 2-D: top-left corner (D-025)
   | { type: string; repr: string };
 
 export interface CellJson {
@@ -29,6 +31,8 @@ export interface CellJson {
   error: string;
   output: string;
   previews: Record<string, Preview>;
+  images: string[];            // base64 PNG figures of the last run (D-025)
+  duration_ms: number | null;  // time of the last run, build excluded
   defs: string[];
   refs: string[];
   upstream_modified: number[];

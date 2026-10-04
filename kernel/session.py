@@ -6,7 +6,9 @@ a Restart always completes before the next Exec is written. Mojo builds run as
 tasks in parallel (bounded) and can be cancelled.
 """
 import asyncio
+import contextlib
 import json
+import logging
 import os
 import signal
 import socket
@@ -20,6 +22,8 @@ from .fmt import Cell
 from .scheduler import Cancel, Compile, Delete, Exec, Kill, Promote, Restart, Scheduler
 
 ROOT = Path(__file__).resolve().parent.parent
+RESULT_LINE_LIMIT = 64 * 1024 * 1024  # ponytail: one result per line; at most 8 figures of <= 4 MiB
+log = logging.getLogger(__name__)
 
 
 def _reason(returncode: int) -> str:
@@ -272,7 +276,9 @@ class Session:
             *(["--core-dumps"] if self.core_dumps else []),
             pass_fds=[child.fileno()], env=env)
         child.close()
-        reader, writer = await asyncio.open_connection(sock=parent)
+        # One result per line, figures included (D-025): asyncio's default 64 KiB line limit was
+        # exceeded even by long non-ASCII output (JSON \u escapes) and the reader died silently.
+        reader, writer = await asyncio.open_connection(sock=parent, limit=RESULT_LINE_LIMIT)
         self._kernel = _Kernel(proc, reader, writer, self._generation)
         self._tasks.append(asyncio.create_task(self._read(self._kernel)))
 
@@ -288,6 +294,10 @@ class Session:
                     self._push(self.sched.ran(cid, json.loads(line)))
         except (ConnectionError, OSError):
             pass  # killed with unread input -> RST instead of EOF: the same death
+        except ValueError:  # a line over RESULT_LINE_LIMIT: the channel is unusable, never hang on it
+            log.error("kernel result line over %d bytes: restarting the kernel", RESULT_LINE_LIMIT)
+            with contextlib.suppress(ProcessLookupError):
+                k.proc.kill()
         rc = await k.proc.wait()
         k.writer.close()
         if k.generation == self._generation:  # an old generation never reports twice
