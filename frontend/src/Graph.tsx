@@ -1,10 +1,11 @@
 // Dependency graph (D-015): layers by longest path, plain SVG, no layout library.
+// Layers run top to bottom: notebooks are deep chains and the side panel is narrow (D-025).
 import type { CellJson } from "./protocol";
 import { look } from "./status";
 import { StateIcon } from "./icons";
 import { scrollToCell } from "./Refs";
 
-const W = 132, H = 34, GX = 40, GY = 14;
+const W = 132, H = 34, GX = 14, GY = 26;
 
 export function layers(ids: number[], edges: [number, number][]): Map<number, number> {
   // Longest path over the acyclic part (Kahn). Cycle members and whatever hangs off
@@ -43,15 +44,15 @@ export function Graph({ cells, order, edges }: { cells: Record<number, CellJson>
     const d = depth.get(id)!;
     const r = rows.get(d) ?? 0;
     rows.set(d, r + 1);
-    pos.set(id, { x: 8 + d * (W + GX), y: 8 + r * (H + GY) });
+    pos.set(id, { x: 8 + r * (W + GX), y: 8 + d * (H + GY) });
   }
-  const width = 16 + (Math.max(0, ...depth.values()) + 1) * (W + GX);
-  const height = 16 + Math.max(1, ...rows.values()) * (H + GY);
+  const width = 16 + Math.max(1, ...rows.values()) * (W + GX);
+  const height = 16 + (Math.max(0, ...depth.values()) + 1) * (H + GY);
   return (
     <svg className="graph" width={width} height={height} role="img" aria-label="grafo de dependências">
       {edges.filter(([p, c]) => pos.has(p) && pos.has(c)).map(([p, c]) => {
         const a = pos.get(p)!, b = pos.get(c)!;
-        return <line key={`${p}-${c}`} x1={a.x + W} y1={a.y + H / 2} x2={b.x} y2={b.y + H / 2} className="edge" markerEnd="url(#arrow)" />;
+        return <line key={`${p}-${c}`} x1={a.x + W / 2} y1={a.y + H} x2={b.x + W / 2} y2={b.y} className="edge" markerEnd="url(#arrow)" />;
       })}
       <defs>
         <marker id="arrow" viewBox="0 0 8 8" refX="8" refY="4" markerWidth="6" markerHeight="6" orient="auto">

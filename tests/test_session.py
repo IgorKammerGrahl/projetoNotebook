@@ -63,7 +63,8 @@ async def test_python_and_mojo_run_in_the_kernel_process(s):
     assert statuses(s) == ["ok", "ok", "ok"]
     x, m, u = s.sched.cells
     assert s.sched.cells[x].previews["xs"] == {"type": "ndarray", "shape": [5], "dtype": "float64",
-                                               "head": [0.0, 1.0, 2.0, 3.0, 4.0]}
+                                               "head": [0.0, 1.0, 2.0, 3.0, 4.0],
+                                               "min": 0.0, "max": 4.0, "mean": 2.0}  # D-025
     assert s.sched.cells[u].previews["u"]["repr"] == "20.0" and s.sched.cells[u].output == "u = 20.0\n"
     assert s.restarts == 0
 

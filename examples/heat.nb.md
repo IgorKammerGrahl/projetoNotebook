@@ -10,8 +10,8 @@ O passo de tempo roda em Mojo; o NumPy prepara a grade, confere o resultado e
 mede a mesma conta para comparar. Mude `steps` ou `r` e dê Shift+Enter: só o
 que depende deles reexecuta, sem recompilar o Mojo.
 
-Este notebook é o teste de aceitação da 1.0 (D-023). Os trechos marcados com
-**Lacuna** contornam limites de hoje e devem sumir até lá.
+Este notebook é o teste de aceitação da 1.0 (D-023): roda de ponta a ponta e o
+Mojo tem de conferir com o NumPy.
 
 ```python
 import numpy as np
@@ -87,8 +87,15 @@ print(f"Mojo confere com NumPy · Mojo {mojo_ms:.0f} ms · NumPy {numpy_ms:.0f} 
 ```
 
 ```python
-# Lacuna (saídas ricas): sem imagem, um mapa de calor em texto.
-_ramp = " .:-=+*#%@"
-_small = T[:: max(ny // 20, 1), :: max(nx // 40, 1)]
-print("\n".join("".join(_ramp[min(int(v / T.max() * len(_ramp)), len(_ramp) - 1)] for v in row) for row in _small))
+import matplotlib.pyplot as plt
+
+_fig, (_mapa, _perfil) = plt.subplots(1, 2, figsize=(10, 4))
+_im = _mapa.imshow(T, cmap="inferno")
+_fig.colorbar(_im, ax=_mapa, label="°C")
+_mapa.set_title(f"Temperatura após {steps} passos")
+_perfil.plot(T0[ny // 2], label="inicial")
+_perfil.plot(T[ny // 2], label=f"após {steps} passos")
+_perfil.set(title="Perfil na linha central", xlabel="x", ylabel="°C")
+_perfil.legend()
+_fig.tight_layout()
 ```

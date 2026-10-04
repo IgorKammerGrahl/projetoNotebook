@@ -51,6 +51,7 @@ button:focus-visible, .node:focus-visible { outline: 2px solid var(--running); o
 
 .cell-head { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; min-height: 26px; }
 .cell-id { color: var(--muted); font: 12px ui-monospace, monospace; margin-right: 4px; }
+.duration { color: var(--muted); font: 12px ui-monospace, monospace; margin-right: 4px; }
 .chip { display: inline-flex; align-items: center; gap: 4px; padding: 1px 8px; border-radius: 999px;
         font-size: 12.5px; color: var(--tone); background: var(--bg-subtle); border: 1px solid var(--tone); }
 .chip.outlined { background: transparent; border-style: dashed; }
@@ -74,6 +75,10 @@ button:focus-visible, .node:focus-visible { outline: 2px solid var(--running); o
 .previews { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 0; font: 12.5px ui-monospace, monospace; }
 .previews dt { font-weight: 600; } .previews dd { margin: 0; overflow-wrap: anywhere; }
 .type { color: var(--muted); margin-right: 6px; }
+.stats { color: var(--muted); }
+.corner { border-collapse: collapse; margin-top: 2px; }
+.corner td { padding: 0 10px 0 0; text-align: right; }
+.figure { display: block; max-width: 100%; height: auto; margin: 4px 0 8px; background: #fff; border-radius: 4px; }
 .error-panel { margin: 6px 0 0; padding: 8px; border-left: 3px solid var(--tone); background: var(--bg-subtle);
                white-space: pre-wrap; font: 12.5px ui-monospace, monospace; }
 .rendered { cursor: text; padding: 4px 0; }

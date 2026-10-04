@@ -1120,3 +1120,39 @@ ida e volta 2-D, recusa de rank e de layout antes do Mojo, acesso fora dos
 limites vira erro e não crash, erro de rank na linha da célula, regras de
 `alloc` 2-D, `Scratch` zerado, `swap` e limite de tamanho;
 `tests/test_cli.py::test_reference_notebook_runs_and_matches_numpy`.
+
+## D-025 — Saídas ricas: figuras, estatísticas de arrays e tempo de execução (2026-10-03)
+
+**Contexto:** no primeiro uso (D-023), o mapa de calor saiu em texto, o preview de
+uma grade mostrava só zeros das bordas, o tempo da célula era medido à mão e
+funções apareciam como `<function … at 0x…>`.
+
+**Escolha:**
+- **Figuras:** `matplotlib-base` vira dependência (conda-forge, sem Qt). O kernel
+  usa o backend `Agg`; depois de cada célula, toda figura aberta é salva como PNG
+  (base64) e todas são fechadas, mesmo após um erro, para nenhuma reaparecer na
+  célula seguinte. `plt.show()` não faz nada e não avisa. Limites: 8 figuras por
+  célula e 4 MiB por PNG; o excesso vira um aviso na saída. O matplotlib só é
+  tocado se a célula importou `pyplot`. As figuras ficam em memória, como as
+  demais saídas, e não vão para o arquivo.
+- **Arrays:** previews numéricos ganham `min`, `max` e `mean` (até 50 milhões de
+  elementos); 2-D ganha o canto superior esquerdo (6×8) como tabela.
+- **Funções:** o preview mostra a assinatura (`diffuse_numpy(T, r, steps)`).
+- **Tempo:** `duration_ms` mede só a execução (a compilação Mojo vem antes) e
+  aparece discreto no cabeçalho de células `ok` ou `error`.
+- **Grafo:** os níveis correm de cima para baixo. Notebooks são cadeias longas e
+  o painel lateral é estreito; antes ele rolava na horizontal e parecia cortado.
+
+**Bug antigo encontrado:** a `Session` lia o kernel com o limite padrão de 64 KiB
+por linha do `asyncio`. Uma linha maior (já possível antes das figuras: 60 mil
+caracteres não-ASCII viram ~360 KB de escapes `\u`) levantava `ValueError` não
+tratado, a leitura morria em silêncio e a sessão esperava para sempre. Agora o
+limite é 64 MiB, coerente com os limites de figura; se ainda assim estourar, o
+kernel é encerrado em vez de travar.
+
+**Fora:** tabelas de pandas/polars (`_repr_html_`) até um notebook real precisar.
+
+**Verificação:** `tests/test_outputs.py` (figuras, limite de figuras, previews,
+tempo, linha acima de 64 KiB), `frontend/e2e/outputs.spec.js` e o notebook de
+referência, que agora não tem nenhuma **Lacuna**
+(`tests/test_cli.py::test_reference_notebook_runs_and_matches_numpy`).
