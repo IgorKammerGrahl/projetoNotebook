@@ -55,11 +55,12 @@ def run(path: str) -> int:
 
 
 async def serve(path: str, port: int, dev_origins: list[str], core_dumps: bool = False,
-                speculate_debounce: float = 0.3):
+                speculate_debounce: float = 0.3, cache_limit_mb: int | None = None):
     from .web import NotebookServer
     static = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     srv = NotebookServer(Path(path), port=port, static_dir=static, extra_origins=tuple(dev_origins),
-                         core_dumps=core_dumps, speculate_debounce=speculate_debounce)
+                         core_dumps=core_dumps, speculate_debounce=speculate_debounce,
+                         cache_limit=cache_limit_mb * 2**20 if cache_limit_mb is not None else None)
     await srv.start()
     print(f"notebook: {srv.url}", flush=True)
     try:
@@ -83,6 +84,9 @@ def main():
                     help="log connections and every message received from clients (debugging)")
     sp.add_argument("--speculate-debounce", type=float, default=0.3, metavar="SECONDS",
                     help="idle time after an edit before a Mojo cell builds in the background (default 0.3)")
+    sp.add_argument("--cache-limit", type=int, metavar="MB",
+                    help="size of the Mojo build cache (.nbcache) before the least recently used builds go "
+                         "(default 512)")
     args = ap.parse_args()
     check_env()
     if args.cmd == "serve":
@@ -91,7 +95,8 @@ def main():
                             format="%(asctime)s %(name)s %(levelname)s %(message)s")
         with contextlib.suppress(KeyboardInterrupt):
             try:
-                asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce))
+                asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce,
+                                  args.cache_limit))
             except (OSError, ValueError) as exc:
                 ap.exit(1, f"kernel: {exc}\n")
         return

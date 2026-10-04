@@ -141,7 +141,7 @@ export class Connection {
   private flush() {
     while (this.pending.length && this.sock?.readyState === 1) {
       const p = this.pending[0];
-      if ((p.msg.type === "run" || p.msg.type === "run_all" || p.msg.type === "stop") && this.d.now() - p.queuedAt > RUN_TTL_MS) {
+      if (["run", "run_all", "stop", "restart"].includes(p.msg.type) && this.d.now() - p.queuedAt > RUN_TTL_MS) {
         this.pending.shift();
         this.h.onNotice?.("Ação de execução descartada: ficou mais de 5 s na fila offline. Execute novamente se desejar.");
         continue;

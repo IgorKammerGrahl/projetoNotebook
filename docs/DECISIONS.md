@@ -1156,3 +1156,43 @@ kernel é encerrado em vez de travar.
 tempo, linha acima de 64 KiB), `frontend/e2e/outputs.spec.js` e o notebook de
 referência, que agora não tem nenhuma **Lacuna**
 (`tests/test_cli.py::test_reference_notebook_runs_and_matches_numpy`).
+
+## D-026 — Sessões longas: reiniciar o kernel e limitar o cache de builds (2026-10-03)
+
+**Contexto:** numa sessão longa, cada versão editada de uma célula Mojo fica
+carregada no kernel (DEBT-001) e deixa um `.so` em `.nbcache/` para sempre
+(DEBT-011). Não havia como reiniciar o kernel à mão, nem indicação de que um
+reinício estava em curso (DEBT-014).
+
+**Escolha:**
+- **Reiniciar kernel:** botão no topo. `Scheduler.restart()` reaproveita o caminho
+  da morte do kernel (D-013): mata o processo e reexecuta tudo o que já tinha
+  rodado. Uma célula em execução é interrompida e fica em quarentena, como no
+  "parar": uma célula travada não volta a rodar sozinha. O evento é do tipo
+  `restarted` (anúncio próprio) e não conta como morte sem culpado. Também
+  funciona a partir de "kernel morto", que antes não tinha saída.
+- **Indicador:** `restarting` no estado do kernel, desde a morte do processo
+  (crash, parar ou o botão) até o novo subir; o topo mostra "reiniciando
+  kernel…". Enquanto isso a sessão não está ociosa.
+- **Limite do cache:** depois de cada build novo, a `Session` apaga os builds
+  menos usados (o mtime do `.so`, atualizado a cada acerto do cache) até caber em
+  `--cache-limit` (padrão 512 MiB). Roda depois de o scheduler adotar o artefato
+  novo, então a versão substituída já não está em uso. Nunca apaga um build usado
+  por célula da sessão, nem o da execução em curso. Restos sem `.so` (fonte de um
+  build que falhou, `.tmp` de um build morto) só saem depois de 1 h, porque um
+  build em andamento tem a mesma cara.
+- **Build que sumiu:** a chave do cache é o hash de código, prelúdio e versão do
+  Mojo, então refazer o mesmo código gera o mesmo caminho. Se o `.so` de um `Exec`
+  não existe mais (limite de outra sessão na mesma pasta, `.nbcache` apagado à
+  mão), a `Session` o refaz antes de mandar o `Exec`. E uma falha no `dlopen` vira
+  erro da célula, não morte do kernel. Antes, apagar `.nbcache` e reiniciar
+  marcava a célula como `crashed`.
+- Um `restart` que ficou mais de 5 s na fila offline é descartado, como as
+  execuções (revisão do frontend, item 2).
+
+**Fora:** reiniciar sozinho por limite de memória, ou um processo por célula
+(DEBT-001 fica mitigada, não paga).
+
+**Verificação:** `tests/test_long_sessions.py`,
+`frontend/src/announcements.test.ts` e `frontend/e2e/kernel-restart.spec.js`. O
+teste no navegador confere que o PID muda e que tudo é recalculado.

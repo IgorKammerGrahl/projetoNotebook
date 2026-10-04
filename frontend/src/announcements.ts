@@ -16,6 +16,7 @@ export class Announcements {
       this.userRuns.clear(); // recovery must not overwrite this summary with per-cell results
       const subject = event.cid === null ? "O kernel" : `A célula ${event.cid}`;
       if (m.kernel.dead) return `${subject} sofreu um crash. O kernel não pôde ser recuperado automaticamente.`;
+      if (event.kind === "restarted") return "O kernel foi reiniciado. As células que já tinham rodado serão reexecutadas.";
       return event.kind === "interrupted"
         ? `Execução interrompida${event.cid === null ? "" : ` na célula ${event.cid}`}. O kernel reinicia e as demais células elegíveis serão reexecutadas.`
         : `${subject} sofreu um crash. O kernel reinicia e as demais células elegíveis serão reexecutadas.`;

@@ -12,6 +12,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -297,6 +298,8 @@ async def build_async(code: str, cache_dir: Path, nice: int = 0) -> tuple[Artifa
     key = cache_key(code)
     so = cache_dir / f"{key}.so"
     if so.exists():
+        with contextlib.suppress(OSError):
+            os.utime(so)  # a hit counts as a use for the cache's LRU (evict)
         return Artifact(str(so), _loader_for(so)), False
     cache_dir.mkdir(parents=True, exist_ok=True)
     src = cache_dir / f"{key}.mojo"
@@ -322,6 +325,44 @@ async def build_async(code: str, cache_dir: Path, nice: int = 0) -> tuple[Artifa
     return Artifact(str(so), _loader_for(so)), True
 
 
+ORPHAN_GRACE_S = 3600  # a source or temp file with no .so may belong to a build in flight
+
+
+def evict(cache_dir: Path, limit: int, keep: set[str]) -> int:
+    """DEBT-011: delete the least recently used builds (key.so + key.mojo; mtime, touched on
+    every cache hit) until the cache holds at most `limit` bytes. Never deletes a build in
+    `keep` (resolved .so paths a session may still load). Leftovers with no .so (the source of
+    a failed build, the temp output of a killed one) go only after ORPHAN_GRACE_S, as a build
+    in flight looks the same. Returns the bytes freed. A build deleted anyway (another
+    session's) is rebuilt before its next run (Session._apply)."""
+    groups: dict[str, dict] = {}  # key -> files, bytes, .so path, last use
+    for f in Path(cache_dir).resolve().iterdir():
+        if f.suffix not in (".so", ".mojo", ".tmp"):
+            continue
+        try:
+            st = f.stat()
+        except FileNotFoundError:
+            continue
+        g = groups.setdefault(f.name.split(".", 1)[0], {"files": [], "bytes": 0, "so": None, "used": 0.0})
+        g["files"].append(f)
+        g["bytes"] += st.st_size
+        if f.suffix == ".so":
+            g["so"], g["used"] = str(f), st.st_mtime
+        elif g["so"] is None:
+            g["used"] = max(g["used"], st.st_mtime)
+    over = sum(g["bytes"] for g in groups.values()) - limit
+    freed, now = 0, time.time()
+    for g in sorted(groups.values(), key=lambda g: g["used"]):
+        if freed >= over:
+            break
+        if g["so"] in keep or (g["so"] is None and now - g["used"] < ORPHAN_GRACE_S):
+            continue
+        for f in g["files"]:
+            f.unlink(missing_ok=True)
+        freed += g["bytes"]
+    return freed
+
+
 def build(code: str, cache_dir: Path) -> tuple[Artifact, bool]:
     """Synchronous build for the in-process driver (CLI, tests)."""
     return asyncio.run(build_async(code, cache_dir))
@@ -334,7 +375,10 @@ def load(artifact: dict) -> ctypes.CDLL:
     """dlopen by path (a new path per version; never importlib.reload, D-001)."""
     so = artifact["so"]
     if so not in _libs:
-        lib = (ctypes.PyDLL if artifact["loader"] == "pydll" else ctypes.CDLL)(so)
+        try:
+            lib = (ctypes.PyDLL if artifact["loader"] == "pydll" else ctypes.CDLL)(so)
+        except OSError as e:  # never kill the kernel (and blame the cell as `crashed`) for a missing file
+            raise CellError(f"could not load the compiled cell: {e}") from None
         lib.nb_cell_entry.argtypes = [ctypes.c_void_p, _AllocFn]
         lib.nb_cell_entry.restype = ctypes.c_ssize_t
         _libs[so] = lib

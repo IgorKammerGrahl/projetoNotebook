@@ -21,6 +21,7 @@ export { default as Skull } from "lucide-react/dist/esm/icons/skull.mjs";
 export { default as Trash } from "lucide-react/dist/esm/icons/trash-2.mjs";
 export { default as Network } from "lucide-react/dist/esm/icons/network.mjs";
 export { default as WifiOff } from "lucide-react/dist/esm/icons/wifi-off.mjs";
+export { default as RotateCcw } from "lucide-react/dist/esm/icons/rotate-ccw.mjs";
 export { Square };
 
 const MAP = {
