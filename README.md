@@ -69,8 +69,14 @@ após a última verificação, ainda pode escapar. Para edição externa simult�
 sem esse risco, encerre o servidor antes de usar outro editor. Hard links não
 são aceitos; links simbólicos de entrada são resolvidos para seu destino.
 
+**Reiniciar kernel** (no topo) libera a memória do kernel, inclusive as versões
+antigas das células Mojo, e reexecuta as células que já tinham rodado. Uma
+célula em execução fica interrompida, como no **parar**.
+
 Opções úteis de `serve`:
 - `--port`;
+- `--cache-limit MB`: tamanho do cache de builds Mojo (`.nbcache/`, padrão 512);
+  os builds menos usados saem primeiro;
 - `--verbose`: registra conexões e mensagens recebidas;
 - `--core-dumps`: para depurar um SIGSEGV;
 - `--speculate-debounce`;
@@ -110,7 +116,8 @@ Cobrem:
   removidas, sem repetir execuções pendentes;
 - conflito de arquivo externo, cópia da sessão, recarregamento sem execução e
   recusa de recarregamento enquanto outra aba possui edições pendentes;
-- figuras do matplotlib, preview 2-D com estatísticas e tempo de execução.
+- figuras do matplotlib, preview 2-D com estatísticas e tempo de execução;
+- reinício do kernel pelo botão, com reexecução em outro processo.
 
 Em caso de falha, capturam imagem, trace e logs em `frontend/test-results/`.
 

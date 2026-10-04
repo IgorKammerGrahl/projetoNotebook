@@ -172,6 +172,7 @@ class Scheduler:
         self.queue: set[int] = set()           # scheduled, waiting to run
         self.running: Exec | None = None
         self.stop_requested = False
+        self.restart_requested = False  # the restart button, not a crash (D-026)
         self.orphan_deaths = 0
         self.kernel_dead = False
         self.kernel_event: dict | None = None
@@ -302,29 +303,49 @@ class Scheduler:
         self.stop_requested = True
         return [Kill()]
 
+    def restart(self) -> list:
+        """Restart button (D-026, DEBT-014): a fresh kernel, which also frees every loaded Mojo
+        library (DEBT-001); then every cell that had run runs again. A running cell is
+        interrupted exactly as by the stop button: a hung cell must not run again on its own."""
+        if self.kernel_dead:  # no process left to kill (D-013 gave up): start one directly
+            self.kernel_dead, self.orphan_deaths = False, 0
+            self._kernel_event("restarted", None)
+            return self._rerun_after_restart()
+        self.restart_requested = True
+        if self.running is not None:
+            self.stop_requested = True
+        return [Kill()]
+
+    def _kernel_event(self, kind: str, cid: int | None):
+        self.kernel_event = {"id": (self.kernel_event["id"] if self.kernel_event else 0) + 1,
+                             "kind": kind, "cid": cid}
+
     def kernel_died(self, reason: str) -> list:
         """D-013: quarantine the running cell, restart, re-run the rest."""
         ex, self.running = self.running, None
         stopped, self.stop_requested = self.stop_requested, False
-        self.kernel_event = {"id": (self.kernel_event["id"] if self.kernel_event else 0) + 1,
-                             "kind": "interrupted" if stopped else "crashed",
-                             "cid": ex.cid if ex is not None else None}
+        manual, self.restart_requested = self.restart_requested, False
+        self._kernel_event("interrupted" if stopped else "restarted" if manual else "crashed",
+                           ex.cid if ex is not None else None)
         if ex is not None and ex.cid in self.cells:
             c = self.cells[ex.cid]
             if stopped:
                 c.quarantine = "interrupted"
                 self._set(ex.cid, "interrupted",
-                          "interrupted by the stop button (the kernel was restarted); "
-                          "run or edit this cell to execute it again")
+                          f"interrupted by the {'restart' if manual else 'stop'} button (the kernel was "
+                          "restarted); run or edit this cell to execute it again")
             else:
                 c.quarantine = "crashed"
                 self._set(ex.cid, "crashed", self._crash_message(ex.cid, reason))
             self.orphan_deaths = 0
-        else:
+        elif not manual:  # a death nobody asked for, with no cell to blame
             self.orphan_deaths += 1
             if self.orphan_deaths > self.MAX_ORPHAN_DEATHS:
                 self.kernel_dead = True
                 return []
+        return self._rerun_after_restart()
+
+    def _rerun_after_restart(self) -> list:
         for c in self.cells.values():
             c.ran_defs = set()  # the kernel's memory is gone
         roots = {cid for cid, c in self.cells.items() if c.ran_once or cid in self.queue}

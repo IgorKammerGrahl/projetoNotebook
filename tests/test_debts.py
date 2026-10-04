@@ -63,7 +63,9 @@ def test_debt_010_compile_blocks_the_caller(tmp_path):
 
 
 @needs_mojo
-def test_debt_011_disk_cache_is_never_evicted(tmp_path):
+def test_debt_011_paid_in_the_session_but_the_sync_engine_never_evicts(tmp_path):
+    """DEBT-011 paid where it matters: the Session trims .nbcache (D-026, tests/test_long_sessions.py).
+    Only the sync Engine, which exists for tests (DEBT-012), still never evicts."""
     e = Engine(cache_dir=tmp_path)
     e.load([Cell("mojo", CELL.replace("VALUE", "1"))])
     (cid,) = e.cells

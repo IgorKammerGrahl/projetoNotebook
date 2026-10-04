@@ -49,7 +49,7 @@ def cell_json(cid, c, sched) -> dict:
 class NotebookServer:
     def __init__(self, path: Path, port: int = 0, token: str | None = None,
                  static_dir: Path | None = None, extra_origins: tuple[str, ...] = (),
-                 core_dumps: bool = False, speculate_debounce: float = 0.3):
+                 core_dumps: bool = False, speculate_debounce: float = 0.3, cache_limit: int | None = None):
         self.file = NotebookFile(path)
         self.path = self.file.path
         self.token = token or secrets.token_urlsafe(32)
@@ -57,6 +57,8 @@ class NotebookServer:
         self.extra_origins = set(extra_origins)
         self.port = port
         self._session_options = dict(core_dumps=core_dumps, speculate_debounce=speculate_debounce)
+        if cache_limit is not None:
+            self._session_options["cache_limit"] = cache_limit
         self.session = Session(self.path.parent / ".nbcache", **self._session_options)
         self.clients: dict[web.WebSocketResponse, asyncio.Queue] = {}  # one ordered outbox per client
         self._epoch = secrets.token_hex(16)
@@ -258,6 +260,7 @@ class NotebookServer:
     def _kernel_state(self):
         event = self.session.sched.kernel_event
         return {"restarts": self.session.restarts, "dead": self.session.sched.kernel_dead,
+                "restarting": self.session.restarting,
                 "event": {**event, "id": f"{self._epoch}:{event['id']}"} if event else None}
 
     def _handle(self, ws, m):
@@ -274,7 +277,7 @@ class NotebookServer:
             raise ValueError("O notebook foi recarregado; a ação antiga foi descartada.")
         if self._reload_committing:
             raise ValueError("Aguarde o carregamento da versão externa.")
-        if kind in {"edit", "add", "delete", "run", "run_all", "stop"}:
+        if kind in {"edit", "add", "delete", "run", "run_all", "stop", "restart"}:
             self._cancel_reload()
         try:
             if kind == "edit":
@@ -311,6 +314,8 @@ class NotebookServer:
                 self._cell_ids.pop(m["cid"], None)
             elif kind == "stop":
                 s.stop()
+            elif kind == "restart":
+                s.restart()
             elif kind == "retry_save":
                 self._start_save()
             elif kind in {"preserve_copy", "reload_external"}:

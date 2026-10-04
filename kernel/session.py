@@ -23,6 +23,7 @@ from .scheduler import Cancel, Compile, Delete, Exec, Kill, Promote, Restart, Sc
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_LINE_LIMIT = 64 * 1024 * 1024  # ponytail: one result per line; at most 8 figures of <= 4 MiB
+DEFAULT_CACHE_LIMIT = 512 * 1024 * 1024  # build cache (.nbcache) budget, DEBT-011
 log = logging.getLogger(__name__)
 
 
@@ -51,12 +52,14 @@ class _Kernel:
 
 class Session:
     def __init__(self, cache_dir: Path | str, max_builds: int | None = None, core_dumps: bool = False,
-                 speculate_debounce: float = 0.3):
+                 speculate_debounce: float = 0.3, cache_limit: int = DEFAULT_CACHE_LIMIT):
         self.sched = Scheduler()
         self.core_dumps = core_dumps  # debug: let a crashing kernel write a core dump
         self.cache_dir = Path(cache_dir)
         self.max_builds = max_builds or max(1, (os.cpu_count() or 1) // 4)  # review: nproc // 4
         self.restarts = 0
+        self.restarting = False  # from a kernel's death (or the restart button) until the new one is up
+        self.cache_limit = cache_limit
         self.compiles = 0
         self.log: list[tuple[float, str, object]] = []  # (time, event, detail) for tests/benchmarks
         self.listeners = []                               # fn(changed: dict[cid, CellState]) per step
@@ -149,6 +152,10 @@ class Session:
     def stop(self):
         self._push(self.sched.stop())
 
+    def restart(self):
+        self.restarting = True
+        self._push(self.sched.restart())
+
     # ---------------- internals ----------------
 
     def _push(self, actions):
@@ -157,13 +164,15 @@ class Session:
         self._after()
 
     def _after(self):
-        if self.sched.changed or self.sched.kernel_event != self._last_kernel_event:
-            self._last_kernel_event = self.sched.kernel_event
+        kernel = (self.sched.kernel_event, self.restarting)
+        if self.sched.changed or kernel != self._last_kernel_event:
+            self._last_kernel_event = kernel
             changed = {cid: self.sched.cells[cid] for cid in self.sched.changed if cid in self.sched.cells}
             self.sched.changed.clear()
             for fn in self.listeners:
                 fn(changed)
-        busy = (self.sched.running is not None or self._builds or self._spec_timers or not self._actions.empty()
+        busy = (self.restarting or self.sched.running is not None or self._builds or self._spec_timers
+                or not self._actions.empty()
                 or (self.sched.queue and not self.sched.kernel_dead))
         self._idle.clear() if busy else self._idle.set()
 
@@ -194,12 +203,19 @@ class Session:
                 t.cancel()
                 self.log.append((time.perf_counter(), "cancel", a.cid))
         elif isinstance(a, Exec):
+            if a.artifact and not os.path.exists(a.artifact["so"]):
+                # ponytail: the build vanished (cache limit, another session, a manual clean). Same
+                # code -> same key -> same path, so rebuild it in place; blocks the worker for one build.
+                self.log.append((time.perf_counter(), "rebuild-missing", a.cid))
+                with contextlib.suppress(mojo.CompileError, OSError):
+                    await mojo.build_async(a.code, self.cache_dir)
             self.log.append((time.perf_counter(), "exec", a.cid))
             await self._kernel.send({"op": "exec", **asdict(a)})
         elif isinstance(a, Delete):
             await self._kernel.send({"op": "delete", "names": a.names})
         elif isinstance(a, Restart):
             await self._start_kernel()
+            self.restarting = False
             self.restarts += 1
             self.log.append((time.perf_counter(), "restart", self.restarts))
         elif isinstance(a, Kill):
@@ -236,7 +252,7 @@ class Session:
 
     async def _build(self, cid: int, code: str, speculative: bool = False):
         me = asyncio.current_task()
-        held = False
+        held = built = False
         try:
             await self._acquire_slot(cid)
             held = True
@@ -266,6 +282,21 @@ class Session:
                 del self._builds[cid]
                 self._speculative.pop(cid, None)
         self._push(self.sched.compiled(cid, code, **result))
+        if built:
+            self._evict()
+
+    def _evict(self):
+        """DEBT-011: keep .nbcache under cache_limit. Runs after the scheduler took the new
+        artifact, so a replaced version is no longer live; a live one is never deleted."""
+        live = [c.artifact for c in self.sched.cells.values()]
+        live.append(self.sched.running.artifact if self.sched.running else None)
+        try:
+            freed = mojo.evict(self.cache_dir, self.cache_limit, {a["so"] for a in live if a})
+        except OSError as e:
+            log.warning("could not trim the build cache: %s", e)
+            return
+        if freed:
+            self.log.append((time.perf_counter(), "evicted", freed))
 
     async def _start_kernel(self):
         self._generation += 1
@@ -302,4 +333,6 @@ class Session:
         k.writer.close()
         if k.generation == self._generation:  # an old generation never reports twice
             self.log.append((time.perf_counter(), "died", _reason(rc)))
-            self._push(self.sched.kernel_died(_reason(rc)))
+            actions = self.sched.kernel_died(_reason(rc))
+            self.restarting = not self.sched.kernel_dead  # until Restart brings the new kernel up
+            self._push(actions)

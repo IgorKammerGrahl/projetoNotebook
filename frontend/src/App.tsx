@@ -3,7 +3,7 @@ import type { Kind, ServerMsg, Status } from "./protocol";
 import { useNotebook } from "./socket";
 import { Cell } from "./Cell";
 import { Graph } from "./Graph";
-import { Network, Play, Skull, Square, WifiOff } from "./icons";
+import { Network, Play, RotateCcw, Skull, Square, StateIcon, WifiOff } from "./icons";
 import { Announcements } from "./announcements";
 import { savingStatus } from "./saving";
 import { RecoveryStore, type RecoveryEntry } from "./recovery";
@@ -115,6 +115,7 @@ export function App() {
               className={saving.error ? "chip tone-error" : "muted"}>{saving.text}</span>
         {!connected && <span className="chip tone-error"><WifiOff size={14} aria-hidden="true" /> desconectado · reconectando…</span>}
         {kernel.dead && <span className="chip tone-error"><Skull size={14} aria-hidden="true" /> kernel morto</span>}
+        {kernel.restarting && <span role="status" className="chip tone-running"><StateIcon name="loader" spin /> reiniciando kernel…</span>}
         {kernel.restarts > 0 && <span className="muted">reinícios do kernel: {kernel.restarts}</span>}
         <span className="spacer" />
         <button onClick={() => send({ type: "run_all" })} disabled={!!reload || busyEditors.size > 0}
@@ -122,6 +123,10 @@ export function App() {
         <button onClick={() => send({ type: "stop" })} disabled={!!reload || !running} className="stop"
                 title="Mata o kernel; a célula em execução fica interrompida e o resto é reexecutado">
           <Square size={15} aria-hidden="true" /> parar
+        </button>
+        <button onClick={() => send({ type: "restart" })} disabled={!!reload || !!kernel.restarting}
+                title="Libera a memória do kernel e reexecuta as células que já tinham rodado; a célula em execução fica interrompida">
+          <RotateCcw size={15} aria-hidden="true" /> reiniciar kernel
         </button>
         <button onClick={() => setShowGraph((g) => !g)} aria-pressed={showGraph}>
           <Network size={15} aria-hidden="true" /> grafo

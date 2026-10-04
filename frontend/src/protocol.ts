@@ -44,7 +44,8 @@ export interface CellJson {
 export interface KernelState {
   restarts: number;
   dead: boolean;
-  event?: { id: string; kind: "crashed" | "interrupted"; cid: number | null } | null;
+  restarting?: boolean;  // a new kernel is starting (after a crash, stop or the restart button, D-026)
+  event?: { id: string; kind: "crashed" | "interrupted" | "restarted"; cid: number | null } | null;
 }
 
 export interface SaveState {
@@ -76,6 +77,7 @@ export type ClientMsg =
   | { type: "add"; code: string; kind: Kind; after: number | null; request?: string }
   | { type: "delete"; cid: number }
   | { type: "stop" }
+  | { type: "restart" }
   | { type: "retry_save" }
   | { type: "preserve_copy" | "reload_external"; revision: number; session: string }
   | { type: "reload_ready"; request: string; ready: boolean };
