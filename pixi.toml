@@ -3,12 +3,16 @@ authors = ["Igor Kammer Grahl <igorkramigra@gmail.com>"]
 channels = ["https://conda.modular.com/max", "conda-forge"]
 name = "projetoNotebook"
 platforms = ["linux-64"]
-version = "0.1.0"
+version = "1.0.0"
+description = "Reactive notebook for Python and Mojo"
+license = "MIT"
 
 [tasks]
+# `pixi run nb notes.nb.md`: installs and builds the interface only when it changed, then opens the browser
+nb = { cmd = "python -m kernel serve --open", depends-on = ["frontend-build"], description = "Open a notebook (created if missing)" }
 test = "python -m pytest -q"
-frontend-install = "npm --prefix frontend ci"
-frontend-build = "npm --prefix frontend run build"
+frontend-install = { cmd = "npm --prefix frontend ci", inputs = ["frontend/package-lock.json"], outputs = ["frontend/node_modules/.package-lock.json"] }
+frontend-build = { cmd = "npm --prefix frontend run build", depends-on = ["frontend-install"], inputs = ["frontend/src/**", "frontend/index.html", "frontend/package-lock.json", "frontend/vite.config.ts", "frontend/tsconfig.json"], outputs = ["frontend/dist/**"] }
 frontend-test = "npm --prefix frontend test"
 frontend-e2e-install = "npm --prefix frontend run test:e2e:install"
 frontend-e2e = { cmd = "npm --prefix frontend run test:e2e", depends-on = ["frontend-build"] }

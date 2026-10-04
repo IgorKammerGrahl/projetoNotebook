@@ -1,28 +1,68 @@
 # Notebook reativo Python + Mojo
 
-Notebook em que a ordem de execução vem do grafo de dependências entre células
-Python e Mojo. Decisões em `docs/DECISIONS.md`, medições em `docs/PHASE*.md`,
-dívidas em `docs/DEBTS.md`, guia das células Mojo em `docs/MOJO_CELLS.md`.
+Notebook local em que a ordem de execução vem do grafo de dependências entre as
+células. Mude um valor e só o que depende dele roda de novo. Células Python e Mojo
+trocam dados (arrays NumPy sem cópia); as células Mojo são compiladas em segundo
+plano enquanto você digita.
 
-## Rodar localmente
+## Começar
 
-Pré-requisitos: [pixi](https://pixi.sh) e um compilador C (`gcc`). O pixi instala
-Python, Mojo, NumPy, matplotlib e Node.
+Pré-requisitos: Linux x86-64, [pixi](https://pixi.sh) e um compilador C (`gcc`). O
+pixi instala Python, Mojo, NumPy, matplotlib e Node.
 
 ```bash
-pixi install
-pixi run frontend-install      # dependências do frontend (npm ci)
-pixi run frontend-build        # gera frontend/dist, servido pelo servidor
-
-# o servidor grava no arquivo a cada edição: abra uma cópia da demonstração
-cp examples/demo.nb.md /tmp/demo.nb.md
-pixi run python -m kernel serve /tmp/demo.nb.md
+git clone https://github.com/IgorKammerGrahl/projetoNotebook.git
+cd projetoNotebook
+pixi run nb ~/notebooks/analise.nb.md
 ```
 
-Abra a URL impressa (`http://127.0.0.1:8765/?token=...`). O token é obrigatório
-(D-016). A demonstração explica, na primeira célula, como provocar cada estado.
-Para uma análise de verdade, abra `examples/heat.nb.md` (difusão de calor 2-D em
-Mojo, conferida com NumPy), o notebook de referência da 1.0 (D-023).
+Na primeira vez, o comando instala as dependências e monta a interface; depois, só
+quando ela muda. O navegador abre sozinho, e o arquivo é criado se não existir.
+Caminhos relativos partem da pasta onde o comando foi digitado. **Ctrl+C** encerra.
+Para continuar depois, rode o mesmo comando.
+
+Para ver uma análise completa, abra uma cópia do notebook de referência: difusão de
+calor 2-D em Mojo, conferida com NumPy e desenhada com matplotlib. O servidor grava
+no arquivo a cada edição, por isso use uma cópia.
+
+```bash
+cp examples/heat.nb.md ~/notebooks/heat.nb.md
+pixi run nb ~/notebooks/heat.nb.md
+```
+
+`examples/demo.nb.md` mostra cada estado de célula (erro, bloqueio, crash,
+interrupção…), com um roteiro na primeira célula.
+
+## Usar
+
+- **Shift+Enter** ou **▶** executa a célula e propaga a mudança às dependentes.
+  Apenas editar não executa.
+- **Células Mojo:** a assinatura de `run` define entradas e saídas, inclusive arrays
+  1-D e 2-D; `Scratch` dá buffers de trabalho locais. Guia em
+  [`docs/MOJO_CELLS.md`](docs/MOJO_CELLS.md).
+- **Saídas:** o que a célula imprime, um resumo de cada nome que ela define (arrays
+  com mínimo, máximo e média) e as figuras do matplotlib que ela deixou abertas.
+  O tempo da última execução aparece ao lado do número da célula.
+- **Parar** mata o kernel; a célula em execução fica interrompida e o resto é
+  reexecutado. **Reiniciar kernel** libera a memória, inclusive as versões antigas
+  das células Mojo, e reexecuta o que já tinha rodado.
+- **Sem navegador:** `pixi run python -m kernel run arquivo.nb.md` roda tudo uma vez
+  e imprime o estado de cada célula.
+
+`pixi run nb` repassa opções para `python -m kernel serve`:
+- `--port` (padrão 8765). Para abrir um segundo notebook ao mesmo tempo, use outra
+  porta (`pixi run nb outro.nb.md --port 8766`) e mantenha sempre a mesma porta para
+  o mesmo notebook, porque os rascunhos do navegador ficam guardados por porta;
+- `--cache-limit MB`: tamanho do cache de builds Mojo (`.nbcache/`, padrão 512);
+  os builds menos usados saem primeiro;
+- `--verbose`: registra conexões e mensagens recebidas;
+- `--core-dumps`: para depurar um SIGSEGV;
+- `--speculate-debounce`;
+- `--dev-origin`.
+
+O servidor só aceita conexões locais, e a URL leva um token obrigatório (D-016).
+
+## Salvamento e recuperação
 
 O topo mostra o estado de salvamento. **“Salvo”** confirma que as alterações
 aceitas foram gravadas; “alterações pendentes” também considera rascunhos,
@@ -69,20 +109,27 @@ após a última verificação, ainda pode escapar. Para edição externa simult�
 sem esse risco, encerre o servidor antes de usar outro editor. Hard links não
 são aceitos; links simbólicos de entrada são resolvidos para seu destino.
 
-**Reiniciar kernel** (no topo) libera a memória do kernel, inclusive as versões
-antigas das células Mojo, e reexecuta as células que já tinham rodado. Uma
-célula em execução fica interrompida, como no **parar**.
+## Compatibilidade
 
-Opções úteis de `serve`:
-- `--port`;
-- `--cache-limit MB`: tamanho do cache de builds Mojo (`.nbcache/`, padrão 512);
-  os builds menos usados saem primeiro;
-- `--verbose`: registra conexões e mensagens recebidas;
-- `--core-dumps`: para depurar um SIGSEGV;
-- `--speculate-debounce`;
-- `--dev-origin`.
+A partir da 1.0.0, o projeto segue [versionamento semântico](https://semver.org/lang/pt-BR/)
+(D-027). Mudanças incompatíveis no que está abaixo só acontecem numa 2.0:
 
-**Desenvolvimento do frontend** (Vite com recarga):
+- **Formato do arquivo:** `.nb.md` versão 2 (`<!-- notebook-format: 2 -->`, com
+  identificadores de célula). Toda versão 1.x lê e grava a versão 2, e continua
+  lendo arquivos sem cabeçalho e da versão 1. Detalhes em
+  [D-007](docs/DECISIONS.md#d-007--formato-do-arquivo-do-notebook-markdown-com-blocos-cercados-2026-09-23).
+- **Células Mojo:** a gramática de `run`, os tipos aceitos e a API de `ArrayIn`,
+  `ArrayOut` e `Scratch` descritos em [`docs/MOJO_CELLS.md`](docs/MOJO_CELLS.md).
+  Novos tipos podem entrar numa 1.x; os existentes não mudam.
+- **Linha de comando:** `pixi run nb`, `python -m kernel serve` e `run`, com as
+  opções listadas acima.
+
+Não são interface pública: o protocolo WebSocket entre o servidor e a interface,
+o conteúdo de `.nbcache/` e os módulos Python internos.
+
+## Desenvolvimento
+
+Interface com recarga automática (Vite):
 
 ```bash
 pixi run python -m kernel serve /tmp/demo.nb.md --dev-origin http://localhost:5173
@@ -90,13 +137,13 @@ pixi run npm --prefix frontend run dev
 # abra http://localhost:5173/?token=<o token impresso pelo servidor>
 ```
 
-**Testes:**
+Testes, os mesmos que o CI roda em cada PR:
 
 ```bash
-pixi run test            # backend (pytest)
-pixi run frontend-test   # lógica do frontend (vitest)
+pixi run test                 # backend (pytest)
+pixi run frontend-test        # lógica do frontend (vitest)
 pixi run frontend-e2e-install # instala o Chromium do Playwright (primeiro uso)
-pixi run frontend-e2e     # build + testes no navegador, sem janela
+pixi run frontend-e2e         # build + testes no navegador, sem janela
 ```
 
 Os testes no navegador usam Chromium, notebooks temporários e o servidor real.
@@ -121,12 +168,10 @@ Cobrem:
 
 Em caso de falha, capturam imagem, trace e logs em `frontend/test-results/`.
 
-Ao salvar, o servidor escreve `<!-- notebook-format: 2 -->` e identificadores
-de célula, preservando conteúdo, ordem e identidade entre reinícios. Markdown
-consecutivo, vazio e com exemplos de código continua preservado. Arquivos sem
-cabeçalho e com a versão 1 continuam sendo aceitos; arquivos da versão 2 exigem
-este leitor atualizado.
-Detalhes em [D-007](docs/DECISIONS.md#d-007--formato-do-arquivo-do-notebook-markdown-com-blocos-cercados-2026-09-23).
+Documentação do projeto: decisões em [`docs/DECISIONS.md`](docs/DECISIONS.md),
+medições em `docs/PHASE*.md`, dívidas técnicas em [`docs/DEBTS.md`](docs/DEBTS.md)
+e mudanças por versão em [`CHANGELOG.md`](CHANGELOG.md).
 
-**Sem navegador:** `pixi run python -m kernel run arquivo.nb.md` roda tudo uma vez
-e imprime o estado de cada célula.
+## Licença
+
+[MIT](LICENSE).
