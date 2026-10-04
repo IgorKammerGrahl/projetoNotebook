@@ -49,8 +49,9 @@ def test_debt_008_paid_cli_survives_a_crashing_mojo_cell(tmp_path):
 def test_debt_009_interface_types_are_limited(tmp_path):
     e = Engine(cache_dir=tmp_path)
     e.load([Cell("mojo", "def run(m: ArrayIn2D[DType.float64]): pass"),
-            Cell("mojo", "def run(s: String): pass")])
-    assert [c.status for c in e.cells.values()] == ["syntax-error", "syntax-error"]
+            Cell("mojo", "def run(s: String): pass"),
+            Cell("mojo", "def run(v: ArrayIn[DType.float64, 3]): pass")])  # 2-D is paid (D-024), 3-D is not
+    assert [c.status for c in e.cells.values()] == ["syntax-error"] * 3
 
 
 @needs_mojo

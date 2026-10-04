@@ -26,46 +26,42 @@ assert r <= 0.25, f"r = {r} torna o esquema instável (máximo 0,25)"
 _yy, _xx = np.mgrid[0:ny, 0:nx]
 _raio = min(nx, ny) / 8
 T0 = np.where((_xx - nx / 2) ** 2 + (_yy - ny / 2) ** 2 < _raio**2, 100.0, 0.0)
-# Lacuna (DEBT-009): células Mojo só recebem arrays 1-D, então a grade vai achatada.
-u0 = T0.ravel()
 ```
 
 ```mojo
 from std.time import perf_counter_ns
 
 
-def run(u0: ArrayIn[DType.float64], nx: Int, ny: Int, r: Float64, steps: Int,
-        mut u: ArrayOut[DType.float64], mut heat: Float64, mut mojo_ms: Float64) raises:
-    var n = nx * ny
-    if nx < 3 or ny < 3 or len(u0) != n:
-        raise Error("u0 precisa ter nx * ny elementos, com nx, ny >= 3")
-    var buf = List[Float64](length=2 * n, fill=0.0)   # dois buffers: [0, n) e [n, 2n)
-    for k in range(n):
-        buf[k] = u0[k]
-        buf[n + k] = u0[k]                            # as bordas ficam iguais nos dois
-    var src = 0
-    var dst = n
+def step(src: Scratch[DType.float64, 2], mut dst: Scratch[DType.float64, 2], r: Float64) raises:
+    for i in range(1, src.dim(0) - 1):
+        for j in range(1, src.dim(1) - 1):
+            var c = src[i, j]
+            dst[i, j] = c + r * (src[i - 1, j] + src[i + 1, j] + src[i, j - 1] + src[i, j + 1] - 4.0 * c)
+
+
+def run(T0: ArrayIn[DType.float64, 2], r: Float64, steps: Int,
+        mut T: ArrayOut[DType.float64, 2], mut heat: Float64, mut mojo_ms: Float64) raises:
+    var ny = T0.dim(0)
+    var nx = T0.dim(1)
+    var a = Scratch[DType.float64, 2](ny, nx)
+    var b = Scratch[DType.float64, 2](ny, nx)
+    for i in range(ny):
+        for j in range(nx):
+            a[i, j] = T0[i, j]
+            b[i, j] = T0[i, j]   # as bordas ficam iguais nos dois buffers
     var t0 = perf_counter_ns()
     for _ in range(steps):
-        for i in range(1, ny - 1):
-            for j in range(1, nx - 1):
-                # Lacuna: `buf[k]` checado deixa este laço 6× mais lento (111 vs 17 ms).
-                # Os índices ficam em [0, 2n) porque 1 <= i <= ny-2 e 1 <= j <= nx-2.
-                var k = i * nx + j
-                var c = buf.unsafe_get(src + k)
-                buf.unsafe_set(dst + k, c + r * (buf.unsafe_get(src + k - nx) + buf.unsafe_get(src + k + nx)
-                                                 + buf.unsafe_get(src + k - 1) + buf.unsafe_get(src + k + 1) - 4.0 * c))
-        src, dst = dst, src
+        step(a, b, r)
+        swap(a, b)
     mojo_ms = Float64(perf_counter_ns() - t0) / 1e6
-    u.alloc(n)
-    for k in range(n):
-        u[k] = buf[src + k]
-        heat += u[k]
+    T.alloc(ny, nx)
+    for i in range(ny):
+        for j in range(nx):
+            T[i, j] = a[i, j]
+            heat += a[i, j]
 ```
 
 ```python
-# Lacuna (DEBT-009): a saída também volta achatada.
-T = u.reshape(ny, nx)
 print(f"máx {T.max():.2f} °C · média {T.mean():.3f} °C")
 print(f"calor total: {T0.sum():,.0f} → {heat:,.0f} ({heat / T0.sum():.1%}; cai quando chega às bordas)")
 ```
