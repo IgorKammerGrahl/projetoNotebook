@@ -29,6 +29,12 @@ def check_env():
         sys.exit("kernel: wrong environment\n  " + "\n  ".join(problems))
 
 
+def resolve(path: str) -> Path:
+    """`pixi run nb notes.nb.md` runs in the project root: a relative path means the
+    directory the command was typed in (pixi's INIT_CWD). Absolute paths are kept."""
+    return Path(os.environ.get("INIT_CWD") or ".") / Path(path).expanduser()
+
+
 def run(path: str) -> int:
     """Run every cell once through the real architecture (Session + kernel process)."""
     from .session import Session
@@ -55,7 +61,7 @@ def run(path: str) -> int:
 
 
 async def serve(path: str, port: int, dev_origins: list[str], core_dumps: bool = False,
-                speculate_debounce: float = 0.3, cache_limit_mb: int | None = None):
+                speculate_debounce: float = 0.3, cache_limit_mb: int | None = None, open_browser: bool = False):
     from .web import NotebookServer
     static = Path(__file__).resolve().parent.parent / "frontend" / "dist"
     srv = NotebookServer(Path(path), port=port, static_dir=static, extra_origins=tuple(dev_origins),
@@ -63,6 +69,9 @@ async def serve(path: str, port: int, dev_origins: list[str], core_dumps: bool =
                          cache_limit=cache_limit_mb * 2**20 if cache_limit_mb is not None else None)
     await srv.start()
     print(f"notebook: {srv.url}", flush=True)
+    if open_browser:
+        import webbrowser
+        webbrowser.open(srv.url)
     try:
         await asyncio.Event().wait()
     finally:
@@ -84,6 +93,7 @@ def main():
                     help="log connections and every message received from clients (debugging)")
     sp.add_argument("--speculate-debounce", type=float, default=0.3, metavar="SECONDS",
                     help="idle time after an edit before a Mojo cell builds in the background (default 0.3)")
+    sp.add_argument("--open", action="store_true", help="open the notebook in the default browser")
     sp.add_argument("--cache-limit", type=int, metavar="MB",
                     help="size of the Mojo build cache (.nbcache) before the least recently used builds go "
                          "(default 512)")
@@ -95,12 +105,12 @@ def main():
                             format="%(asctime)s %(name)s %(levelname)s %(message)s")
         with contextlib.suppress(KeyboardInterrupt):
             try:
-                asyncio.run(serve(args.path, args.port, args.dev_origin, args.core_dumps, args.speculate_debounce,
-                                  args.cache_limit))
+                asyncio.run(serve(str(resolve(args.path)), args.port, args.dev_origin, args.core_dumps,
+                                  args.speculate_debounce, args.cache_limit, args.open))
             except (OSError, ValueError) as exc:
                 ap.exit(1, f"kernel: {exc}\n")
         return
-    sys.exit(run(args.path))
+    sys.exit(run(str(resolve(args.path))))
 
 
 if __name__ == "__main__":

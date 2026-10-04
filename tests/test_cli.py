@@ -48,6 +48,15 @@ def test_reference_notebook_runs_and_matches_numpy(tmp_path):
     assert "Mojo confere com NumPy" in r.stdout
 
 
+def test_relative_paths_mean_the_directory_the_command_was_typed_in(tmp_path):
+    # `pixi run nb notes.nb.md` runs in the project root; pixi passes the caller's directory as INIT_CWD
+    (tmp_path / "rel.nb.md").write_text("```python\nx = 1\n```\n")
+    env = {**os.environ, "INIT_CWD": str(tmp_path)}
+    r = subprocess.run([sys.executable, "-m", "kernel", "run", "rel.nb.md"], capture_output=True, text=True,
+                       env=env, cwd=Path(__file__).parent.parent)
+    assert r.returncode == 0 and r.stdout.startswith("[1] ok"), r.stdout + r.stderr
+
+
 def test_cli_exit_code_on_error(tmp_path):
     p = tmp_path / "bad.nb.md"
     p.write_text("```python\nx = 1 / 0\n```\n")

@@ -1196,3 +1196,34 @@ reinício estava em curso (DEBT-014).
 **Verificação:** `tests/test_long_sessions.py`,
 `frontend/src/announcements.test.ts` e `frontend/e2e/kernel-restart.spec.js`. O
 teste no navegador confere que o PID muda e que tudo é recalculado.
+
+## D-027 — Release 1.0: comando único e contrato público (2026-10-04)
+
+**Contexto:** rodar um notebook pedia quatro comandos (instalar, instalar o
+frontend, montar o frontend, servir) e uma URL copiada à mão. A 1.0 é também o
+ponto a partir do qual o versionamento semântico passa a valer, então é preciso
+dizer o que é interface pública.
+
+**Escolha:**
+- **`pixi run nb arquivo.nb.md`:** as tarefas `frontend-install` e
+  `frontend-build` declaram `inputs`/`outputs` e o pixi as pula quando nada mudou;
+  `nb` depende delas e chama `serve --open`. Caminhos relativos partem do
+  `INIT_CWD` do pixi (a pasta onde o comando foi digitado), já que as tarefas
+  rodam na raiz do projeto. O arquivo é criado se não existir. A porta padrão
+  continua fixa (8765): os rascunhos do navegador são guardados por origem (D-021),
+  e uma porta aleatória os perderia.
+- **Contrato público (semver):** o formato `.nb.md` v2 (D-007), a interface das
+  células Mojo (gramática de `run`, tipos, API de `ArrayIn`/`ArrayOut`/`Scratch`;
+  D-010, D-024) e a linha de comando (`nb`, `serve`, `run` e opções). Novos tipos e
+  opções podem entrar numa 1.x; remover ou mudar os existentes, só numa 2.0. Não
+  são públicos: o protocolo WebSocket (servidor e interface mudam juntos), o
+  conteúdo de `.nbcache/` e os módulos Python internos.
+- **Licença MIT**, `CHANGELOG.md` desde a 0.1.0 e versão 1.0.0 no `pixi.toml` e no
+  frontend.
+
+**Instalação limpa:** o CI instala tudo a partir de um checkout novo a cada PR
+(pixi travado pelo `pixi.lock`, `npm ci`, Chromium) e roda as três suítes.
+
+**Verificação:** `tests/test_cli.py::test_relative_paths_mean_the_directory_the_command_was_typed_in`;
+`pixi run nb` testado a partir de outra pasta, com caminho relativo e o cache das
+tarefas do frontend acertando.
